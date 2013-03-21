@@ -25,6 +25,7 @@
 #include <linux/interrupt.h>
 #include <linux/init.h>
 #include <linux/delay.h>
+#include <linux/jiffies.h>
 
 #include <asm/io.h>
 #include <asm/hardware.h>
@@ -70,6 +71,12 @@ EXPORT_SYMBOL( outsl );
 #else // #ifdef CONFIG_PCI
 
 extern spinlock_t oxnas_gpio_spinlock;
+
+#ifdef CONFIG_OXNAS_PCI_RESET
+static unsigned long pci_trhfa_startwait = 0;
+static unsigned long pci_trhfa_msec = 0;
+static unsigned long pci_trhfa_timeout = 0;
+#endif // CONFIG_OXNAS_PCI_RESET
 
 #define PCI_BUS_NONMEM_START			0x00000000
 #define PCI_BUS_NONMEM_SIZE	    		0x00080000
@@ -505,6 +512,15 @@ static struct pci_ops oxnas_pci_ops = {
 struct pci_bus *oxnas_pci_scan_bus(int nr, struct pci_sys_data *sys)
 {
 //	printk(KERN_DEBUG "PCI: oxnas_pci_scan_bus\n");
+
+#ifdef CONFIG_OXNAS_PCI_RESET
+	printk(KERN_DEBUG "PCI: oxnas_pci_scan_bus now it's %lu, still waiting till %lu to become ready for config\n", jiffies, pci_trhfa_timeout);
+	if (time_after_eq(jiffies + msecs_to_jiffies(pci_trhfa_msec), pci_trhfa_timeout))  /* ensure not wrap */
+		while(time_before(jiffies, pci_trhfa_timeout))
+			udelay(100);
+	printk(KERN_DEBUG "PCI: oxnas_pci_scan_bus waited from %lu to %lu to become ready for config\n", pci_trhfa_startwait, jiffies);
+#endif // CONFIG_OXNAS_PCI_RESET
+
 	return pci_scan_bus(sys->busnr, &oxnas_pci_ops, sys);
 }
 
@@ -651,6 +667,16 @@ static struct hw_pci oxnas_pci __initdata = {
 
 static int __init oxnas_pci_init(void)
 {
+#ifdef CONFIG_OXNAS_PCI_RESET
+	// CPU has reset PCI bus via GPIO.
+	// According to PCI spec, we have to wait for 2^25 PCI clocks to meet
+	// the PCI timing parameter Trhfa (RST# high to first access).
+	pci_trhfa_startwait = jiffies;
+	pci_trhfa_msec = 1000; // 1 sec should be fine for 33MHz
+	pci_trhfa_timeout = jiffies + msecs_to_jiffies(pci_trhfa_msec);
+	printk(KERN_DEBUG "PCI: oxnas_pci_init now it's %lu, will wait till %lu to become ready for config\n", pci_trhfa_startwait, pci_trhfa_timeout);
+#endif // CONFIG_OXNAS_PCI_RESET
+
     pci_common_init(&oxnas_pci);
 	return 0;
 }
