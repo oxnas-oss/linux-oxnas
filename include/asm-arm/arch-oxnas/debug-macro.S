@@ -14,13 +14,13 @@
 		.macro  addruart,rx
 		mrc		p15, 0, \rx, c1, c0
 		tst		\rx, #1					@ MMU enabled?
-#ifdef CONFIG_ARCH_OXNAS_UART1
+#ifdef CONFIG_ARCH_OXNAS_UART1_DEBUG
 		ldreq	\rx, =UART_1_BASE_PA	@ physical base address
 		ldrne	\rx, =UART_1_BASE		@ virtual address
-#elif CONFIG_ARCH_OXNAS_UART2
+#elif CONFIG_ARCH_OXNAS_UART2_DEBUG
 		ldreq	\rx, =UART_2_BASE_PA	@ physical base address
 		ldrne	\rx, =UART_2_BASE		@ virtual address
-#elif CONFIG_ARCH_OXNAS_UART3
+#elif CONFIG_ARCH_OXNAS_UART3_DEBUG
 		ldreq	\rx, =UART_3_BASE_PA	@ physical base address
 		ldrne	\rx, =UART_3_BASE		@ virtual address
 #else

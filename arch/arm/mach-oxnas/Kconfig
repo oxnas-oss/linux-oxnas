@@ -66,6 +66,20 @@ config ARCH_OXNAS_UART1
 		UARTs will be mapped to ttySn numbers from UART1 to UART4, only
 		including those UARTs selected to be present
 
+config ARCH_OXNAS_UART1_DEBUG
+	bool "Use UART1 as debug channel"
+	depends on ARCH_OXNAS_UART1
+	default n
+	help
+		This enables UART1 to be usable as debug channel.
+
+config ARCH_OXNAS_UART1_BOOTPROGRESS
+	bool "Display boot progress over UART1"
+	depends on ARCH_OXNAS_UART1
+	default n
+	help
+		This enables displaying boot progress over UART1.
+
 config ARCH_OXNAS_UART1_MODEM
 	bool "Support UART1 modem control lines"
 	depends on ARCH_OXNAS_UART1
@@ -81,6 +95,20 @@ config ARCH_OXNAS_UART2
 		UARTs will be mapped to ttySn numbers from UART1 to UART4, only
 		including those UARTs selected to be present
 
+config ARCH_OXNAS_UART2_DEBUG
+	bool "Use UART2 as debug channel"
+	depends on ARCH_OXNAS_UART2
+	default n
+	help
+		This enables UART2 to be usable as debug channel.
+
+config ARCH_OXNAS_UART2_BOOTPROGRESS
+	bool "Display boot progress over UART2"
+	depends on ARCH_OXNAS_UART2
+	default n
+	help
+		This enables displaying boot progress over UART2.
+
 config ARCH_OXNAS_UART2_MODEM
 	bool "Support UART2 modem control lines"
 	depends on ARCH_OXNAS_UART2
@@ -95,6 +123,20 @@ config ARCH_OXNAS_UART3
 		This enables UAR3 to be accessible to Linux
 		UARTs will be mapped to ttySn numbers from UART1 to UART4, only
 		including those UARTs selected to be present
+
+config ARCH_OXNAS_UART3_DEBUG
+	bool "Use UART3 as debug channel"
+	depends on ARCH_OXNAS_UART3
+	default n
+	help
+		This enables UART3 to be usable as debug channel.
+
+config ARCH_OXNAS_UART3_BOOTPROGRESS
+	bool "Display boot progress over UART3"
+	depends on ARCH_OXNAS_UART3
+	default n
+	help
+		This enables displaying boot progress over UART3.
 
 config ARCH_OXNAS_UART3_MODEM
 	bool "Support UART3 modem control lines"
@@ -113,6 +155,20 @@ config ARCH_OXNAS_UART4
 		including those UARTs selected to be present
 		UART4 always has its modem control lines available on external pins
 		when selected (overlaying PCI functions)
+
+config ARCH_OXNAS_UART4_DEBUG
+	bool "Use UART4 as debug channel"
+	depends on ARCH_OXNAS_UART4
+	default n
+	help
+		This enables UART4 to be usable as debug channel.
+
+config ARCH_OXNAS_UART4_BOOTPROGRESS
+	bool "Display boot progress over UART4"
+	depends on ARCH_OXNAS_UART4
+	default n
+	help
+		This enables displaying boot progress over UART4.
 
 config ARCH_OXNAS_PCI_REQGNT_0
 	bool "Enable req/gnt for PCI device 0"
