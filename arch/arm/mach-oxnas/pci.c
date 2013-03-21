@@ -78,12 +78,14 @@ static unsigned long pci_trhfa_msec = 0;
 static unsigned long pci_trhfa_timeout = 0;
 #endif // CONFIG_OXNAS_PCI_RESET
 
-#define PCI_BUS_NONMEM_START			0x00000000
-#define PCI_BUS_NONMEM_SIZE	    		0x00080000
+// processor allows up to 8MB PCI address ranges maximum by design
+// we split this up to 4MB prefetchable and 4MB non-prefetchable
 
+#define PCI_BUS_NONMEM_START			0x00000000
+#define PCI_BUS_NONMEM_SIZE	    		0x00400000
 
 #define PCI_BUS_PREMEM_START			PCI_BUS_NONMEM_START + PCI_BUS_NONMEM_SIZE
-#define PCI_BUS_PREMEM_SIZE	    		0x00080000
+#define PCI_BUS_PREMEM_SIZE	    		0x00400000
 
 #define SYNOPSYS_PCI_MEMORY_BASE_ADDRESS        PCI_BASE_ADDRESS_0
 #define SYNOPSYS_PCI_DUAL_CYCLE_BASE_ADDRESS    PCI_BASE_ADDRESS_2
