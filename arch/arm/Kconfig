@@ -409,6 +409,10 @@ config ARCH_OMAP
 	help
 	  Support for TI's OMAP platform (OMAP1 and OMAP2).
 
+config ARCH_OXNAS
+	bool "Oxford Semiconductor NAS SoC"
+	help
+	  This enables support for Oxsemi NAS SoC
 endchoice
 
 source "arch/arm/mach-clps711x/Kconfig"
@@ -460,6 +464,8 @@ source "arch/arm/mach-imx/Kconfig"
 source "arch/arm/mach-h720x/Kconfig"
 
 source "arch/arm/mach-versatile/Kconfig"
+
+source "arch/arm/mach-oxnas/Kconfig"
 
 source "arch/arm/mach-aaec2000/Kconfig"
 
@@ -537,7 +543,7 @@ config ISA_DMA_API
 	bool
 
 config PCI
-	bool "PCI support" if ARCH_INTEGRATOR_AP || ARCH_VERSATILE_PB || ARCH_IXP4XX || ARCH_KS8695 || MACH_ARMCORE
+	bool "PCI support" if ARCH_INTEGRATOR_AP || ARCH_VERSATILE_PB || ARCH_IXP4XX || ARCH_KS8695 || MACH_ARMCORE || ARCH_OXNAS
 	help
 	  Find out whether you have a PCI motherboard. PCI is the name of a
 	  bus system, i.e. the way the CPU talks to the other stuff inside
@@ -653,11 +659,13 @@ config NO_IDLE_HZ
 	  to have accurate timekeeping with dynamic tick.
 
 config HZ
-	int
+	int "Kernel timer tick rate"
 	default 128 if ARCH_L7200
 	default 200 if ARCH_EBSA110 || ARCH_S3C2410
 	default OMAP_32K_TIMER_HZ if ARCH_OMAP && OMAP_32K_TIMER
 	default 100
+	help
+		Sets the number of timer tick interrupts per second
 
 config AEABI
 	bool "Use the ARM EABI to compile the kernel"
@@ -1010,7 +1018,7 @@ source "drivers/misc/Kconfig"
 if PCMCIA || ARCH_CLPS7500 || ARCH_IOP32X || ARCH_IOP33X || ARCH_IXP4XX \
 	|| ARCH_L7200 || ARCH_LH7A40X || ARCH_PXA || ARCH_RPC \
 	|| ARCH_S3C2410 || ARCH_SA1100 || ARCH_SHARK || FOOTBRIDGE \
-	|| ARCH_IXP23XX
+	|| ARCH_IXP23XX || ARCH_OXNAS
 source "drivers/ide/Kconfig"
 endif
 

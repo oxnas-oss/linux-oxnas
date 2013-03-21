@@ -17,7 +17,7 @@
 #include <linux/rtc.h>
 #include <linux/bcd.h>
 
-
+#define ACCEPT_UNINITIALIZED_DEVICE_IN_PROBE
 
 /* We can't determine type by probing, but if we expect pre-Linux code
  * to have set the chip up as a clock (turning on the oscillator and
@@ -445,6 +445,7 @@ read_rtc:
 		break;
 	}
 
+#ifndef ACCEPT_UNINITIALIZED_DEVICE_IN_PROBE
 	tmp = ds1307->regs[DS1307_REG_SECS];
 	tmp = BCD2BIN(tmp & 0x7f);
 	if (tmp > 60)
@@ -460,6 +461,7 @@ read_rtc:
 	tmp = BCD2BIN(ds1307->regs[DS1307_REG_MONTH] & 0x1f);
 	if (tmp == 0 || tmp > 12)
 		goto exit_bad;
+#endif // !ACCEPT_UNINITIALIZED_DEVICE_IN_PROBE
 
 	tmp = ds1307->regs[DS1307_REG_HOUR];
 	switch (ds1307->type) {

@@ -83,7 +83,12 @@
 
 	.text
 
+#ifdef CONFIG_OXNAS_INSTRUMENT_COPIES
+ENTRY(__copy_from_user_alt)
+#else // CONFIG_OXNAS_INSTRUMENT_COPIES
+.section ".text.__copy_from_user"
 ENTRY(__copy_from_user)
+#endif // CONFIG_OXNAS_INSTRUMENT_COPIES
 
 #include "copy_template.S"
 

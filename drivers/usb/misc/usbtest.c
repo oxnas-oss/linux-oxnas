@@ -993,6 +993,7 @@ test_ctrl_queue (struct usbtest_dev *dev, struct usbtest_param *param)
 
 		u->context = &context;
 		u->complete = ctrl_complete;
+		u->transfer_flags |= URB_NO_SETUP_DMA_MAP;
 	}
 
 	/* queue the urbs */
@@ -1151,6 +1152,7 @@ static int verify_halted (int ep, struct urb *urb)
 		dbg ("ep %02x couldn't get halt status, %d", ep, retval);
 		return retval;
 	}
+	le16_to_cpus(&status);
 	if (status != 1) {
 		dbg ("ep %02x bogus status: %04x != 1", ep, status);
 		return -EINVAL;
@@ -1207,7 +1209,7 @@ static int halt_simple (struct usbtest_dev *dev)
 	int		retval = 0;
 	struct urb	*urb;
 
-	urb = simple_alloc_urb (testdev_to_usbdev (dev), 0, 512);
+	urb = simple_alloc_urb (testdev_to_usbdev (dev), 0, 256);
 	if (urb == NULL)
 		return -ENOMEM;
 
@@ -2100,6 +2102,10 @@ static struct usb_device_id id_table [] = {
 	/* EZ-USB devices which download firmware to replace (or in our
 	 * case augment) the default device implementation.
 	 */
+	/* generic EZ-USB FX controller */
+	{ USB_DEVICE (0x0547, 0x2131),
+		.driver_info = (unsigned long) &ez1_info,
+		},
 
 	/* generic EZ-USB FX controller */
 	{ USB_DEVICE (0x0547, 0x2235),
