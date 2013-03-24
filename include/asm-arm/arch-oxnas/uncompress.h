@@ -12,13 +12,13 @@
 
 static inline void putc(int c)
 {
-#ifdef CONFIG_ARCH_OXNAS_UART1
+#ifdef CONFIG_ARCH_OXNAS_UART1_BOOTPROGRESS
     static volatile unsigned char* uart = (volatile unsigned char*)UART_1_BASE_PA;
-#elif defined(CONFIG_ARCH_OXNAS_UART2)
+#elif defined(CONFIG_ARCH_OXNAS_UART2_BOOTPROGRESS)
     static volatile unsigned char* uart = (volatile unsigned char*)UART_2_BASE_PA;
-#elif defined(CONFIG_ARCH_OXNAS_UART3)
+#elif defined(CONFIG_ARCH_OXNAS_UART3_BOOTPROGRESS)
     static volatile unsigned char* uart = (volatile unsigned char*)UART_3_BASE_PA;
-#elif defined(CONFIG_ARCH_OXNAS_UART4)
+#elif defined(CONFIG_ARCH_OXNAS_UART4_BOOTPROGRESS)
     static volatile unsigned char* uart = (volatile unsigned char*)UART_4_BASE_PA;
 #else
 #define NO_UART
