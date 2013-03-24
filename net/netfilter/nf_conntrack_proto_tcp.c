@@ -861,7 +861,7 @@ static int tcp_packet(struct nf_conn *conntrack,
 		}
 		/* Fall through */
 	case TCP_CONNTRACK_IGNORE:
-		/* Ignored packets: 
+		/* Ignored packets:
 		 *
 		 * Our connection entry may be out of sync, so ignore
 		 * packets which may signal the real connection between
@@ -871,7 +871,7 @@ static int tcp_packet(struct nf_conn *conntrack,
 		 * b) SYN/ACK in REPLY
 		 * c) ACK in reply direction after initial SYN in original.
 		 *
-		 * If the ignored packet is invalid, the receiver will send 
+		 * If the ignored packet is invalid, the receiver will send
 		 * a RST we'll catch below.
 		 */
 		if (index == TCP_SYNACK_SET

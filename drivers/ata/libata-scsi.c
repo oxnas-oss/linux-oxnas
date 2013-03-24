@@ -1477,7 +1477,10 @@ static void ata_scsi_qc_complete(struct ata_queued_cmd *qc)
 
 	qc->scsidone(cmd);
 
-	ata_qc_free(qc);
+	if (ap->ops->qc_free)
+        ap->ops->qc_free(qc);
+    else
+        ata_qc_free(qc);
 }
 
 /**
@@ -1552,13 +1555,19 @@ static int ata_scsi_translate(struct ata_device *dev, struct scsi_cmnd *cmd,
 	return 0;
 
 early_finish:
-	ata_qc_free(qc);
+	if (qc->ap->ops->qc_free)
+        qc->ap->ops->qc_free(qc);
+    else
+        ata_qc_free(qc);
 	qc->scsidone(cmd);
 	DPRINTK("EXIT - early finish (good or error)\n");
 	return 0;
 
 err_did:
-	ata_qc_free(qc);
+	if (qc->ap->ops->qc_free)
+        qc->ap->ops->qc_free(qc);
+    else
+        ata_qc_free(qc);
 	cmd->result = (DID_ERROR << 16);
 	qc->scsidone(cmd);
 err_mem:
@@ -1566,7 +1575,10 @@ err_mem:
 	return 0;
 
 defer:
-	ata_qc_free(qc);
+	if (qc->ap->ops->qc_free)
+        qc->ap->ops->qc_free(qc);
+    else
+        ata_qc_free(qc);
 	DPRINTK("EXIT - defer\n");
 	if (rc == ATA_DEFER_LINK)
 		return SCSI_MLQUEUE_DEVICE_BUSY;
@@ -2314,7 +2326,10 @@ static void atapi_sense_complete(struct ata_queued_cmd *qc)
 	}
 
 	qc->scsidone(qc->scsicmd);
-	ata_qc_free(qc);
+	if (qc->ap->ops->qc_free)
+        qc->ap->ops->qc_free(qc);
+    else
+        ata_qc_free(qc);
 }
 
 /* is it pointless to prefer PIO for "safety reasons"? */
@@ -2403,7 +2418,10 @@ static void atapi_qc_complete(struct ata_queued_cmd *qc)
 
 		qc->scsicmd->result = SAM_STAT_CHECK_CONDITION;
 		qc->scsidone(cmd);
-		ata_qc_free(qc);
+        if (qc->ap->ops->qc_free)
+            qc->ap->ops->qc_free(qc);
+        else
+            ata_qc_free(qc);
 		return;
 	}
 
@@ -2448,7 +2466,10 @@ static void atapi_qc_complete(struct ata_queued_cmd *qc)
 	}
 
 	qc->scsidone(cmd);
-	ata_qc_free(qc);
+	if (qc->ap->ops->qc_free)
+        qc->ap->ops->qc_free(qc);
+    else
+        ata_qc_free(qc);
 }
 /**
  *	atapi_xlat - Initialize PACKET taskfile
@@ -2693,6 +2714,12 @@ static unsigned int ata_scsi_pass_thru(struct ata_queued_cmd *qc)
 	/* We may not issue DMA commands if no DMA mode is set */
 	if (tf->protocol == ATA_PROT_DMA && dev->dma_mode == 0)
 		goto invalid_fld;
+
+    /** @NOTE: OX800/OX810 driver needs polling for PIO and no data commands */
+    if ((tf->protocol == ATA_PROT_PIO) ||
+        (tf->protocol == ATA_PROT_NODATA)) {
+        tf->flags |= ATA_TFLAG_POLLING;
+    }
 
 	/*
 	 * 12 and 16 byte CDBs use different offsets to

@@ -53,6 +53,7 @@
 
 /* Prototype: void *memcpy(void *dest, const void *src, size_t n); */
 
+.section ".text.memcpy"
 ENTRY(memcpy)
 
 #include "copy_template.S"

@@ -30,6 +30,7 @@
  * memzero again.
  */
 
+.section ".text.__memzero"
 ENTRY(__memzero)
 	mov	r2, #0			@ 1
 	ands	r3, r0, #3		@ 1 unaligned?
