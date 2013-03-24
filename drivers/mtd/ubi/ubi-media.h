@@ -24,11 +24,11 @@
 
 /*
  * This file defines the layout of UBI headers and all the other UBI on-flash
- * data structures. May be included by user-space.
+ * data structures.
  */
 
-#ifndef __UBI_HEADER_H__
-#define __UBI_HEADER_H__
+#ifndef __UBI_MEDIA_H__
+#define __UBI_MEDIA_H__
 
 #include <asm/byteorder.h>
 
@@ -58,13 +58,51 @@ enum {
 };
 
 /*
+ * Volume flags used in the volume table record.
+ *
+ * @UBI_VTBL_AUTORESIZE_FLG: auto-resize this volume
+ *
+ * %UBI_VTBL_AUTORESIZE_FLG flag can be set only for one volume in the volume
+ * table. UBI automatically re-sizes the volume which has this flag and makes
+ * the volume to be of largest possible size. This means that if after the
+ * initialization UBI finds out that there are available physical eraseblocks
+ * present on the device, it automatically appends all of them to the volume
+ * (the physical eraseblocks reserved for bad eraseblocks handling and other
+ * reserved physical eraseblocks are not taken). So, if there is a volume with
+ * the %UBI_VTBL_AUTORESIZE_FLG flag set, the amount of available logical
+ * eraseblocks will be zero after UBI is loaded, because all of them will be
+ * reserved for this volume. Note, the %UBI_VTBL_AUTORESIZE_FLG bit is cleared
+ * after the volume had been initialized.
+ *
+ * The auto-resize feature is useful for device production purposes. For
+ * example, different NAND flash chips may have different amount of initial bad
+ * eraseblocks, depending of particular chip instance. Manufacturers of NAND
+ * chips usually guarantee that the amount of initial bad eraseblocks does not
+ * exceed certain percent, e.g. 2%. When one creates an UBI image which will be
+ * flashed to the end devices in production, he does not know the exact amount
+ * of good physical eraseblocks the NAND chip on the device will have, but this
+ * number is required to calculate the volume sized and put them to the volume
+ * table of the UBI image. In this case, one of the volumes (e.g., the one
+ * which will store the root file system) is marked as "auto-resizable", and
+ * UBI will adjust its size on the first boot if needed.
+ *
+ * Note, first UBI reserves some amount of physical eraseblocks for bad
+ * eraseblock handling, and then re-sizes the volume, not vice-versa. This
+ * means that the pool of reserved physical eraseblocks will always be present.
+ */
+enum {
+	UBI_VTBL_AUTORESIZE_FLG = 0x01,
+};
+
+/*
  * Compatibility constants used by internal volumes.
  *
  * @UBI_COMPAT_DELETE: delete this internal volume before anything is written
- * to the flash
+ *                     to the flash
  * @UBI_COMPAT_RO: attach this device in read-only mode
  * @UBI_COMPAT_PRESERVE: preserve this internal volume - do not touch its
- * physical eraseblocks, don't allow the wear-leveling unit to move them
+ *                       physical eraseblocks, don't allow the wear-leveling
+ *                       sub-system to move them
  * @UBI_COMPAT_REJECT: reject this UBI image
  */
 enum {
@@ -86,7 +124,7 @@ enum {
  * struct ubi_ec_hdr - UBI erase counter header.
  * @magic: erase counter header magic number (%UBI_EC_HDR_MAGIC)
  * @version: version of UBI implementation which is supposed to accept this
- * UBI image
+ *           UBI image
  * @padding1: reserved for future, zeroes
  * @ec: the erase counter
  * @vid_hdr_offset: where the VID header starts
@@ -122,24 +160,23 @@ struct ubi_ec_hdr {
  * struct ubi_vid_hdr - on-flash UBI volume identifier header.
  * @magic: volume identifier header magic number (%UBI_VID_HDR_MAGIC)
  * @version: UBI implementation version which is supposed to accept this UBI
- * image (%UBI_VERSION)
+ *           image (%UBI_VERSION)
  * @vol_type: volume type (%UBI_VID_DYNAMIC or %UBI_VID_STATIC)
  * @copy_flag: if this logical eraseblock was copied from another physical
- * eraseblock (for wear-leveling reasons)
+ *             eraseblock (for wear-leveling reasons)
  * @compat: compatibility of this volume (%0, %UBI_COMPAT_DELETE,
- * %UBI_COMPAT_IGNORE, %UBI_COMPAT_PRESERVE, or %UBI_COMPAT_REJECT)
+ *          %UBI_COMPAT_IGNORE, %UBI_COMPAT_PRESERVE, or %UBI_COMPAT_REJECT)
  * @vol_id: ID of this volume
  * @lnum: logical eraseblock number
- * @leb_ver: version of this logical eraseblock (IMPORTANT: obsolete, to be
- * removed, kept only for not breaking older UBI users)
+ * @padding1: reserved for future, zeroes
  * @data_size: how many bytes of data this logical eraseblock contains
  * @used_ebs: total number of used logical eraseblocks in this volume
  * @data_pad: how many bytes at the end of this physical eraseblock are not
- * used
+ *            used
  * @data_crc: CRC checksum of the data stored in this logical eraseblock
- * @padding1: reserved for future, zeroes
- * @sqnum: sequence number
  * @padding2: reserved for future, zeroes
+ * @sqnum: sequence number
+ * @padding3: reserved for future, zeroes
  * @hdr_crc: volume identifier header CRC checksum
  *
  * The @sqnum is the value of the global sequence counter at the time when this
@@ -187,10 +224,6 @@ struct ubi_ec_hdr {
  * checksum is correct, this physical eraseblock is selected (P1). Otherwise
  * the older one (P) is selected.
  *
- * Note, there is an obsolete @leb_ver field which was used instead of @sqnum
- * in the past. But it is not used anymore and we keep it in order to be able
- * to deal with old UBI images. It will be removed at some point.
- *
  * There are 2 sorts of volumes in UBI: user volumes and internal volumes.
  * Internal volumes are not seen from outside and are used for various internal
  * UBI purposes. In this implementation there is only one internal volume - the
@@ -211,9 +244,9 @@ struct ubi_ec_hdr {
  * The @data_crc field contains the CRC checksum of the contents of the logical
  * eraseblock if this is a static volume. In case of dynamic volumes, it does
  * not contain the CRC checksum as a rule. The only exception is when the
- * data of the physical eraseblock was moved by the wear-leveling unit, then
- * the wear-leveling unit calculates the data CRC and stores it in the
- * @data_crc field. And of course, the @copy_flag is %in this case.
+ * data of the physical eraseblock was moved by the wear-leveling sub-system,
+ * then the wear-leveling sub-system calculates the data CRC and stores it in
+ * the @data_crc field. And of course, the @copy_flag is %in this case.
  *
  * The @data_size field is used only for static volumes because UBI has to know
  * how many bytes of data are stored in this eraseblock. For dynamic volumes,
@@ -240,14 +273,14 @@ struct ubi_vid_hdr {
 	__u8    compat;
 	__be32  vol_id;
 	__be32  lnum;
-	__be32  leb_ver; /* obsolete, to be removed, don't use */
+	__u8    padding1[4];
 	__be32  data_size;
 	__be32  used_ebs;
 	__be32  data_pad;
 	__be32  data_crc;
-	__u8    padding1[4];
+	__u8    padding2[4];
 	__be64  sqnum;
-	__u8    padding2[12];
+	__u8    padding3[12];
 	__be32  hdr_crc;
 } __attribute__ ((packed));
 
@@ -262,7 +295,9 @@ struct ubi_vid_hdr {
 
 /* The layout volume contains the volume table */
 
-#define UBI_LAYOUT_VOL_ID        UBI_INTERNAL_VOL_START
+#define UBI_LAYOUT_VOLUME_ID     UBI_INTERNAL_VOL_START
+#define UBI_LAYOUT_VOLUME_TYPE   UBI_VID_DYNAMIC
+#define UBI_LAYOUT_VOLUME_ALIGN  1
 #define UBI_LAYOUT_VOLUME_EBS    2
 #define UBI_LAYOUT_VOLUME_NAME   "layout volume"
 #define UBI_LAYOUT_VOLUME_COMPAT UBI_COMPAT_REJECT
@@ -289,7 +324,8 @@ struct ubi_vid_hdr {
  * @upd_marker: if volume update was started but not finished
  * @name_len: volume name length
  * @name: the volume name
- * @padding2: reserved, zeroes
+ * @flags: volume flags (%UBI_VTBL_AUTORESIZE_FLG)
+ * @padding: reserved, zeroes
  * @crc: a CRC32 checksum of the record
  *
  * The volume table records are stored in the volume table, which is stored in
@@ -324,8 +360,9 @@ struct ubi_vtbl_record {
 	__u8    upd_marker;
 	__be16  name_len;
 	__u8    name[UBI_VOL_NAME_MAX+1];
-	__u8    padding2[24];
+	__u8    flags;
+	__u8    padding[23];
 	__be32  crc;
 } __attribute__ ((packed));
 
-#endif /* !__UBI_HEADER_H__ */
+#endif /* !__UBI_MEDIA_H__ */
