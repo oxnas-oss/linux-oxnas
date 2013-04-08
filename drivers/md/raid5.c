@@ -54,6 +54,8 @@
 #include <linux/raid/bitmap.h>
 #include <linux/async_tx.h>
 
+#include <linux/thecus_event.h>
+
 /*
  * Stripe cache
  */
@@ -1263,6 +1265,8 @@ static void error(mddev_t *mddev, mdk_rdev_t *rdev)
 			"raid5: Disk failure on %s, disabling device."
 			" Operation continuing on %d devices\n",
 			bdevname(rdev->bdev,b), conf->raid_disks - mddev->degraded);
+
+		criticalevent_user(RAID_DISK_FAIL,bdevname(rdev->bdev,b));
 	}
 }
 

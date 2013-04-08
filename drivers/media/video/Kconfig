@@ -802,6 +802,16 @@ config USB_ZR364XX
 	  To compile this driver as a module, choose M here: the
 	  module will be called zr364xx.
 
+config USB_GSCPA
+	tristate "USB GSCPA/SPCA5xx driver"
+	depends on USB && VIDEO_DEV && VIDEO_V4L1
+	---help---
+	  Say Y or M here to enable support for the GSCPA/SPCA5xx
+	  webcam.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called quickcam_messenger.
+
 endif # V4L_USB_DRIVERS
 
 endif # VIDEO_CAPTURE_DRIVERS

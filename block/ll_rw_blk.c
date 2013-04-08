@@ -1424,6 +1424,13 @@ static int ll_back_merge_fn(struct request_queue *q, struct request *req,
 	else
 		max_sectors = q->max_sectors;
 
+    /*
+     * If the RAID modes of the bio associated with the request differs
+     * from the merge candidate bio, it can't be merged
+     */
+    if (req->bio->bi_raid != bio->bi_raid)
+        return 0;
+
 	if (req->nr_sectors + bio_sectors(bio) > max_sectors) {
 		req->cmd_flags |= REQ_NOMERGE;
 		if (req == q->last_merge)
@@ -1462,6 +1469,12 @@ static int ll_front_merge_fn(struct request_queue *q, struct request *req,
 	else
 		max_sectors = q->max_sectors;
 
+    /*
+     * If the RAID modes of the bio associated with the request differs
+     * from the merge candidate bio, it can't be merged
+     */
+    if (req->bio->bi_raid != bio->bi_raid)
+        return 0;
 
 	if (req->nr_sectors + bio_sectors(bio) > max_sectors) {
 		req->cmd_flags |= REQ_NOMERGE;
@@ -1502,6 +1515,17 @@ static int ll_merge_requests_fn(struct request_queue *q, struct request *req,
 	 */
 	if (req->special || next->special)
 		return 0;
+
+    /*
+     * If the RAID modes of the bio associated with the two requests differ
+     * then they cannot be merged.
+     *
+    BUG_ON(!req);
+    BUG_ON(!req->bio);
+    BUG_ON(!next);
+    BUG_ON(!next->bio);
+    if (req->bio->bi_raid != next->bio->bi_raid)
+        return 0;*/
 
 	/*
 	 * Will it become too large?
@@ -2965,7 +2989,7 @@ static void init_request_from_bio(struct request *req, struct bio *bio)
 
 static int __make_request(struct request_queue *q, struct bio *bio)
 {
-	struct request *req;
+	struct request *req = 0;
 	int el_ret, nr_sectors, barrier, err;
 	const unsigned short prio = bio_prio(bio);
 	const int sync = bio_sync(bio);
@@ -2992,6 +3016,15 @@ static int __make_request(struct request_queue *q, struct bio *bio)
 		goto get_rq;
 
 	el_ret = elv_merge(q, &req, bio);
+
+    /* if the bio raid modes differ, force a no-merge */
+    if ((!ELEVATOR_NO_MERGE) &&
+        (req) &&
+        (req->bio) &&
+        (bio->bi_raid != req->bio->bi_raid )) {
+        el_ret = ELEVATOR_NO_MERGE;
+    }
+
 	switch (el_ret) {
 		case ELEVATOR_BACK_MERGE:
 			BUG_ON(!rq_mergeable(req));
@@ -3438,10 +3471,15 @@ static int __end_that_request_first(struct request *req, int uptodate,
 		req->errors = 0;
 
 	if (!uptodate) {
-		if (blk_fs_request(req) && !(req->cmd_flags & REQ_QUIET))
+		if (blk_fs_request(req) && !(req->cmd_flags & REQ_QUIET)) {
+			if (req->rq_disk) {
+				printk("DISK_IO_FAIL %s\n",req->rq_disk->disk_name);
+			//	criticalevent_user(DISK_IO_FAIL,req->rq_disk->disk_name);
+			}
 			printk("end_request: I/O error, dev %s, sector %llu\n",
 				req->rq_disk ? req->rq_disk->disk_name : "?",
 				(unsigned long long)req->sector);
+		}
 	}
 
 	if (blk_fs_request(req) && req->rq_disk) {

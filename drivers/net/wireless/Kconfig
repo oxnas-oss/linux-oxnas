@@ -656,4 +656,22 @@ source "drivers/net/wireless/b43legacy/Kconfig"
 source "drivers/net/wireless/zd1211rw/Kconfig"
 source "drivers/net/wireless/rt2x00/Kconfig"
 
+comment "ZyDAS ZD1211(b/g) usb support"
+	depends on USB && EXPERIMENTAL
+config ZD1211
+	tristate 'ZyDas ZD1211(b/g) ap mode usb support'
+	depends on USB && EXPERIMENTAL
+	---help---
+	  Enable support for usb WLAN cards containing the
+	  ZyDAS ZD1211 chip.
+
+comment "ZyDAS ZD1211B(b/g) usb support"
+	depends on USB && EXPERIMENTAL
+config ZD1211B
+	tristate 'ZyDas ZD1211B(b/g) ap mode usb support'
+	depends on USB && EXPERIMENTAL
+	---help---
+	  Enable support for usb WLAN cards containing the
+	  ZyDAS ZD1211B chip.
+
 endmenu

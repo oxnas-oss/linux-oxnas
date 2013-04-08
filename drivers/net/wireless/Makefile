@@ -40,6 +40,12 @@ obj-$(CONFIG_B43)		+= b43/
 obj-$(CONFIG_B43LEGACY)		+= b43legacy/
 obj-$(CONFIG_ZD1211RW)		+= zd1211rw/
 
+# usb zd1211 drivers
+obj-$(CONFIG_ZD1211)		+= zd1211/
+
+# usb zd1211b drivers
+obj-$(CONFIG_ZD1211B)		+= zd1211b/
+
 # 16-bit wireless PCMCIA client drivers
 obj-$(CONFIG_PCMCIA_RAYCS)	+= ray_cs.o
 obj-$(CONFIG_PCMCIA_WL3501)	+= wl3501_cs.o

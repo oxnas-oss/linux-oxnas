@@ -15,6 +15,8 @@
 
 #define DRV_VERSION "0.5"
 
+/* Addresses to scan */
+static unsigned short normal_i2c[] = { 0x32, I2C_CLIENT_END };
 
 /*
  * Ricoh has a family of I2C based RTCs, which differ only slightly from
@@ -340,7 +342,7 @@ static int rs5c_read_alarm(struct device *dev, struct rtc_wkalrm *t)
 	t->time.tm_mday = -1;
 	t->time.tm_mon = -1;
 	t->time.tm_year = -1;
-	t->time.tm_wday = -1;
+	t->time.tm_wday = rs5c->regs[RS5C_REG_ALARM_A_WDAY] & 0x7F;
 	t->time.tm_yday = -1;
 	t->time.tm_isdst = -1;
 
@@ -359,10 +361,12 @@ static int rs5c_set_alarm(struct device *dev, struct rtc_wkalrm *t)
 	unsigned char		buf[4];
 
 	/* only handle up to 24 hours in the future, like RTC_ALM_SET */
+/*
 	if (t->time.tm_mday != -1
 			|| t->time.tm_mon != -1
 			|| t->time.tm_year != -1)
 		return -EINVAL;
+*/
 
 	/* REVISIT: round up tm_sec */
 
@@ -384,7 +388,10 @@ static int rs5c_set_alarm(struct device *dev, struct rtc_wkalrm *t)
 	buf[0] = RS5C_ADDR(RS5C_REG_ALARM_A_MIN);
 	buf[1] = BIN2BCD(t->time.tm_min);
 	buf[2] = rs5c_hr2reg(rs5c, t->time.tm_hour);
-	buf[3] = 0x7f;	/* any/all days */
+	if(t->time.tm_wday==-1)
+		buf[3] = 0x7f;	/* any/all days */
+	else
+		buf[3] = t->time.tm_wday;
 	if ((i2c_master_send(client, buf, 4)) != 4) {
 		pr_debug("%s: can't set alarm time\n", rs5c->rtc->name);
 		return -EIO;
@@ -516,6 +523,7 @@ static int rs5c372_probe(struct i2c_client *client)
 	rs5c372->regs=&rs5c372->buf[1];
 
 	rs5c372->client = client;
+	rs5c372->has_irq = 1;
 	i2c_set_clientdata(client, rs5c372);
 
 	err = rs5c_get_regs(rs5c372);

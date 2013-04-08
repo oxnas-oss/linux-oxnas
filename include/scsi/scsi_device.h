@@ -91,6 +91,8 @@ struct scsi_device {
 	unsigned sector_size;	/* size in bytes */
 
 	void *hostdata;		/* available to low-level driver */
+	char dev_name[16];	/* disk name, add by citizen */
+	unsigned int tray_id;	/* Thecus Tray id, add by citizen */
 	char type;
 	char scsi_level;
 	char inq_periph_qual;	/* PQ from INQUIRY data */	

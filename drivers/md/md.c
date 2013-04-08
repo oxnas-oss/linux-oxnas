@@ -55,6 +55,8 @@
 
 #include <asm/unaligned.h>
 
+#include <linux/thecus_event.h>
+
 #define MAJOR_NR MD_MAJOR
 #define MD_DRIVER
 
@@ -150,6 +152,96 @@ static ctl_table raid_root_table[] = {
 static struct block_device_operations md_fops;
 
 static int start_readonly;
+
+static mdk_rdev_t * find_rdev_nr(mddev_t *mddev, int nr);
+//Return value
+//0:Normal
+//1:Degrade
+//2:Damage
+static int chk_degrade(mddev_t * mddev)
+{
+	int nr,working,active,failed,spare;
+	mdk_rdev_t *rdev;
+	struct list_head *tmp;
+	int remove;
+	int i;
+	int ret;
+
+	//for raid 10 check
+	int damage_chk=0x0;
+	int bitkey=0x1;
+	int chkkey=0x3;
+	int targetkey=0;
+
+	nr=working=active=failed=spare=0;
+	ITERATE_RDEV(mddev,rdev,tmp) {
+		nr++;
+		if (test_bit(Faulty, &rdev->flags))
+			failed++;
+		else {
+			working++;
+			if (test_bit(In_sync, &rdev->flags))
+				active++;
+			else
+				spare++;
+		}
+	}
+
+	remove=0;
+	for (i=0;i<mddev->raid_disks;i++) {
+		rdev = find_rdev_nr(mddev, i);
+		if (!rdev) {
+			remove++;
+		} else {
+			damage_chk|=(bitkey<<rdev->raid_disk);
+		}
+	}
+
+	color_print_green_begin();
+	printk(KERN_ALERT "nr=%d mddev->raid_disks=%d working=%d active=%d spare=%d failed=%d mddev->in_sync=%d remove=%d mdname=%s degrade=%d\n",nr,mddev->raid_disks,working,active,spare,failed,mddev->in_sync,remove,mdname(mddev),mddev->degraded);
+	color_print_end();
+
+	if ((mddev->raid_disks > working)||(failed>0)||(remove>0)) {
+		ret=1;
+		if(mddev->raid_disks == active){
+			return 0;
+		}
+		//Damage Check
+		switch (mddev->level) {
+			case -1:
+				ret=2;
+			  break;
+			case 0:
+				ret=2;
+			  break;
+			case 1:
+				if (working<=0) ret=2;
+			  break;
+			case 5:
+				if ((working <2)||(mddev->raid_disks - working >=2)) ret=2;
+			  break;
+			case 6:
+				if ((working <2)||(mddev->raid_disks - working >=3)) ret=2;
+			  break;
+			case 10:
+				chkkey=0x3;
+				for (i=0;i< mddev->raid_disks;i+=2) {
+					targetkey=0;
+					targetkey=damage_chk&(chkkey<<i);
+					//printk("chkkey=0x%X chkkey<<i=0x%X damage_chk=0x%X targetkey=0x%X \n",chkkey,chkkey<<i,damage_chk,targetkey);
+					if (targetkey==0) { //damage
+						//printk("Damage Happen !!\n");
+						ret=2;
+						break;
+					}
+				}
+			  break;
+		}
+		return ret;
+	}
+	return 0;
+}
+EXPORT_SYMBOL(chk_degrade);
 
 /*
  * We have a system wide 'event count' that is incremented
@@ -3279,11 +3371,19 @@ static int do_md_run(mddev_t * mddev)
 		}
 	}
 	if (err) {
+		check_raid_status(mddev,RAID_STATUS_NA);
+
 		printk(KERN_ERR "md: pers->run() failed ...\n");
 		module_put(mddev->pers->owner);
 		mddev->pers = NULL;
 		bitmap_destroy(mddev);
 		return err;
+	} else {
+		if ((mddev->degraded == 0) && !mddev->in_sync) {
+			chk_degrade(mddev);
+			// 目前當開機時, assemble RAID 時會送出
+			check_raid_status(mddev,RAID_STATUS_HEALTHY);
+		}
 	}
 	if (mddev->pers->sync_request) {
 		if (sysfs_create_group(&mddev->kobj, &md_redundancy_group))
@@ -3333,6 +3433,12 @@ static int do_md_run(mddev_t * mddev)
 	if (mddev->degraded && !mddev->sync_thread) {
 		struct list_head *rtmp;
 		int spares = 0;
+
+		if (chk_degrade(mddev)==1) {
+			// 目前當開機時, assemble RAID 時是 degrade 時會送出
+			check_raid_status(mddev,RAID_STATUS_DEGRADE);
+		}
+
 		ITERATE_RDEV(mddev,rdev,rtmp)
 			if (rdev->raid_disk >= 0 &&
 			    !test_bit(In_sync, &rdev->flags) &&
@@ -3532,6 +3638,7 @@ static int do_md_stop(mddev_t * mddev, int mode)
 		printk(KERN_INFO "md: %s switched to read-only mode.\n",
 			mdname(mddev));
 	err = 0;
+	check_raid_status(mddev,RAID_STATUS_NA);
 	md_new_event(mddev);
 out:
 	return err;
@@ -3555,6 +3662,7 @@ static void autorun_array(mddev_t *mddev)
 	}
 	printk("\n");
 
+	check_raid_status(mddev,RAID_STATUS_AUTO_RUN);
 	err = do_md_run (mddev);
 	if (err) {
 		printk(KERN_WARNING "md: do_md_run() returned %d\n", err);
@@ -3967,10 +4075,33 @@ static int hot_remove_disk(mddev_t * mddev, dev_t dev)
 	md_update_sb(mddev, 1);
 	md_new_event(mddev);
 
+	if (chk_degrade(mddev)==1) {
+		check_raid_status(mddev,RAID_STATUS_DEGRADE);
+	} else if (chk_degrade(mddev)==2) {
+		check_raid_status(mddev,RAID_STATUS_DAMAGE);
+	} else {
+		check_raid_status(mddev,RAID_STATUS_HEALTHY);
+	}
+
 	return 0;
 busy:
 	printk(KERN_WARNING "md: cannot remove active disk %s from %s ... \n",
 		bdevname(rdev->bdev,b), mdname(mddev));
+
+	printk("md-hot_remove_disk: level=%d max_disk=%d raid_disk=%d \n",
+		mddev->level,mddev->max_disks,mddev->raid_disks);
+	switch (mddev->level) {
+		case -1:
+			check_raid_status(mddev,RAID_STATUS_DAMAGE);
+			break;
+		case 0:
+			check_raid_status(mddev,RAID_STATUS_DAMAGE);
+			break;
+		case 1:
+			check_raid_status(mddev,RAID_STATUS_DAMAGE);
+			break;
+	}
+
 	return -EBUSY;
 }
 
@@ -4563,6 +4694,7 @@ static int md_ioctl(struct inode *inode, struct file *file,
 			goto done_unlock;
 
 		case RUN_ARRAY:
+			check_raid_status(mddev,RAID_STATUS_CREATE);
 			err = do_md_run (mddev);
 			goto done_unlock;
 
@@ -5351,6 +5483,8 @@ void md_do_sync(mddev_t *mddev)
 	       "(but not more than %d KB/sec) for %s.\n",
 	       speed_max(mddev), desc);
 
+	check_raid_status(mddev,RAID_STATUS_RECOVERY);
+
 	is_mddev_idle(mddev); /* this also initializes IO event counters */
 
 	io_sectors = 0;
@@ -5647,6 +5781,15 @@ void md_check_recovery(mddev_t *mddev)
 			/* flag recovery needed just to double check */
 			set_bit(MD_RECOVERY_NEEDED, &mddev->recovery);
 			md_new_event(mddev);
+
+			if (chk_degrade(mddev)==1) {
+				check_raid_status(mddev,RAID_STATUS_DEGRADE);
+			} else if (chk_degrade(mddev)==2) {
+				check_raid_status(mddev,RAID_STATUS_DAMAGE);
+			} else {
+				check_raid_status(mddev,RAID_STATUS_HEALTHY);
+			}
+
 			goto unlock;
 		}
 		/* Clear some bits that don't mean anything, but
@@ -5698,8 +5841,10 @@ void md_check_recovery(mddev_t *mddev)
 					mdname(mddev));
 				/* leave the spares where they are, it shouldn't hurt */
 				mddev->recovery = 0;
-			} else
+			} else {
+				check_raid_status(mddev,RAID_STATUS_RECOVERY);
 				md_wakeup_thread(mddev->sync_thread);
+			}
 			md_new_event(mddev);
 		}
 	unlock:

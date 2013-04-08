@@ -1,0 +1,49 @@
+#!/bin/sh
+
+usage()
+{
+  echo "Usage:$0 {en|dis}"
+}
+
+for x in "1";do
+
+  if [ $# -lt 1 ]; then usage; break; fi
+  action=$1
+
+  case "$action" in
+
+  en)
+	echo "===Station enable==="
+#    ifconfig eth0 down
+    sync;sync
+    echo "0"
+    /sbin/insmod zd1211.ko
+    echo "1"
+	ifconfig eth1 192.168.1.4 up
+	echo "2"
+    iwconfig eth1 essid G1000
+    /usr/local/NetIQ/endpoint
+    echo "3"
+
+	;;
+
+  dis)
+	echo "===Station disable==="
+	ifconfig eth1 down
+	echo "1"
+	/sbin/rmmod zd1211
+
+
+	echo "2"
+    /usr/local/NetIQ/endpoint -k
+    echo "3"
+	;;
+
+  *)
+	usage
+	;;
+
+  esac
+
+
+done

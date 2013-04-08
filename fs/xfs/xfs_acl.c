@@ -85,11 +85,18 @@ STATIC int
 posix_acl_xattr_to_xfs(
 	posix_acl_xattr_header	*src,
 	size_t			size,
-	xfs_acl_t		*dest)
+	xfs_acl_t		*dest,
+	uid_t           fuid,
+	gid_t           fgid,
+	int		kind)
 {
 	posix_acl_xattr_entry	*src_entry;
 	xfs_acl_entry_t		*dest_entry;
 	int			n;
+	int			user_obj_idx=-1;
+	int			u_perm=-1;
+	int			group_obj_idx=-1;
+	int			g_perm=-1;
 
 	if (!src || !dest)
 		return EINVAL;
@@ -116,17 +123,32 @@ posix_acl_xattr_to_xfs(
 	dest_entry = &dest->acl_entry[0];
 
 	for (n = 0; n < dest->acl_cnt; n++, src_entry++, dest_entry++) {
+//printk("%d e_tag: %d, e_perm: %d, e_id: %d\n",n,
+//le16_to_cpu(src_entry->e_tag),le16_to_cpu(src_entry->e_perm),le32_to_cpu(src_entry->e_id));
+
 		dest_entry->ae_perm = le16_to_cpu(src_entry->e_perm);
 		if (_ACL_PERM_INVALID(dest_entry->ae_perm))
 			return EINVAL;
 		dest_entry->ae_tag  = le16_to_cpu(src_entry->e_tag);
 		switch(dest_entry->ae_tag) {
 		case ACL_USER:
+			if( fuid == le32_to_cpu(src_entry->e_id) )
+				u_perm = dest_entry->ae_perm;
+			dest_entry->ae_id = le32_to_cpu(src_entry->e_id);
+			break;
 		case ACL_GROUP:
+			if( fgid == le32_to_cpu(src_entry->e_id) )
+				g_perm = dest_entry->ae_perm;
 			dest_entry->ae_id = le32_to_cpu(src_entry->e_id);
 			break;
 		case ACL_USER_OBJ:
+			user_obj_idx = n;
+			dest_entry->ae_id = ACL_UNDEFINED_ID;
+			break;
 		case ACL_GROUP_OBJ:
+			group_obj_idx = n;
+			dest_entry->ae_id = ACL_UNDEFINED_ID;
+			break;
 		case ACL_MASK:
 		case ACL_OTHER:
 			dest_entry->ae_id = ACL_UNDEFINED_ID;
@@ -134,6 +156,20 @@ posix_acl_xattr_to_xfs(
 		default:
 			return EINVAL;
 		}
+	}
+	if ( (kind == _ACL_TYPE_ACCESS) && (user_obj_idx != -1)
+          && (u_perm != -1) ) {
+		dest_entry = &dest->acl_entry[0];
+		dest_entry += user_obj_idx;
+		dest_entry->ae_perm = u_perm;
+//		printk("idx: %d, change owner perm to : %d\n", user_obj_idx, u_perm);
+	}
+	if ( (kind == _ACL_TYPE_ACCESS) && (group_obj_idx != -1)
+          && (g_perm != -1) ) {
+		dest_entry = &dest->acl_entry[0];
+		dest_entry += group_obj_idx;
+		dest_entry->ae_perm = g_perm;
+//		printk("idx: %d, change owner group perm to : %d\n", group_obj_idx, g_perm);
 	}
 	if (xfs_acl_invalid(dest))
 		return EINVAL;
@@ -288,6 +324,9 @@ xfs_acl_vset(
 	xfs_acl_t		*xfs_acl;
 	int			error;
 	int			basicperms = 0; /* more than std unix perms? */
+	xfs_inode_t     *ip = NULL;
+	uid_t           fuid = 0;
+	gid_t           fgid = 0;
 
 	if (!acl)
 		return -EINVAL;
@@ -295,7 +334,16 @@ xfs_acl_vset(
 	if (!(_ACL_ALLOC(xfs_acl)))
 		return -ENOMEM;
 
-	error = posix_acl_xattr_to_xfs(ext_acl, size, xfs_acl);
+	ip = xfs_vtoi(vp);
+	//printk("uid: %d, gid: %d\n",ip->i_d.di_uid,ip->i_d.di_gid);
+	if(NULL != ip) {
+		fuid = ip->i_d.di_uid;
+		fgid = ip->i_d.di_gid;
+	} else {
+		printk("uid, gid get error in xfs -- citizen\n");
+	}
+
+	error = posix_acl_xattr_to_xfs(ext_acl, size, xfs_acl, fuid, fgid, kind);
 	if (error) {
 		_ACL_FREE(xfs_acl);
 		return -error;

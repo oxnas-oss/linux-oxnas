@@ -945,7 +945,8 @@ static int parse_options(char *options, int is_vfat, int silent, int *debug,
 		opts->shortname = 0;
 	opts->name_check = 'n';
 	opts->quiet = opts->showexec = opts->sys_immutable = opts->dotsOK =  0;
-	opts->utf8 = opts->unicode_xlate = 0;
+	opts->utf8 = 1;
+	opts->unicode_xlate = 0;
 	opts->numtail = 1;
 	opts->usefree = opts->nocase = 0;
 	*debug = 0;

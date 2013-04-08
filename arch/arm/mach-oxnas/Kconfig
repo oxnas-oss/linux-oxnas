@@ -1,0 +1,636 @@
+if ARCH_OXNAS
+
+menu "Oxford Semiconductor NAS Options"
+
+config THECUS_N0204_IO
+	tristate "Thecus N0204 platform"
+	default m
+	help
+	  This enables support for Thecus N0204 Oxford platform
+
+config THECUS_N2200_IO
+	tristate "Thecus N2200 platform"
+	default m
+	help
+	  This enables support for Thecus N2200 Oxford platform
+
+config THECUS_RTC
+	tristate "Thecus N0204/N2200 platform use RTC ricoh rs5c372"
+	depends on THECUS_N0204_IO || THECUS_N2200_IO
+	default m
+	help
+	  This enables support for ricoh rs5c372 platform device
+
+config THECUS_MAX_TRAY
+	int "Max tray number"
+	depends on THECUS_N0204_IO || THECUS_N2200_IO
+	default 2
+	help
+	  Max tray number for thecus product used
+
+config THECUS_POWER_BUTTON_MONITOR
+	tristate "Load thecus power button monitoring program"
+	depends on THECUS_N0204_IO || THECUS_N2200_IO
+	default n
+	help
+		Support powering down the system via a GPIO button
+
+config THECUS_COPY_BUTTON_MONITOR
+	tristate "Load thecus usb copy button monitoring program"
+	depends on THECUS_N0204_IO || THECUS_N2200_IO
+	default n
+	help
+		Support usb copy button via a GPIO button
+
+config N0204_THERMAL
+	tristate "Load thecus thermal program"
+	depends on THECUS_N0204_IO
+	default n
+	help
+		Support temperature detect via a GPIO pin
+
+config N2200_THERMAL_FAN
+	tristate "Load thecus thermal and automatic fan control program"
+	depends on THECUS_N2200_IO
+	default n
+	help
+		Support temperature detect via a GPIO pin
+
+config ARCH_OXNAS_FPGA
+	bool "FPGA platform"
+	default n
+	help
+	  This enables support for Oxsemi NAS SoC FPGA development platform
+
+config OXNAS_CORE_CLK
+	int "Integrator core module processor clock frequency in MHz"
+	depends on ARCH_OXNAS_FPGA
+	default 175
+	help
+		Maximum reliable frequency 175MHz
+
+config OXNAS_CORE_BUS_CLK_DIV
+	int "Integrator core module bus clock divider"
+	depends on ARCH_OXNAS_FPGA
+	default 4
+	help
+		Must be greater than 0
+
+config NOMINAL_PLL400_FREQ
+	int "The master clock frequency of the Soc"
+	default 400000000
+	help
+		The PLL400 clock is divided by 2 to drive the ARM clock and by
+		4 to drive the AHB clock
+
+config NOMINAL_RPSCLK_FREQ
+	int "The input clock frequency to the RPS"
+	default 25000000
+	help
+		The RPS clock feeds into a prescaler and from there feeds the
+		RPS timers
+
+choice
+	prompt "OXNAS system type"
+	default OXNAS_VERSION_0X800
+
+config OXNAS_VERSION_0X800
+	bool "0X800"
+	select ARM_AMBA
+	help
+	  Support for the 0X800 SoC
+
+config OXNAS_VERSION_0X810
+	bool "0X810"
+	select ARM_AMBA
+	help
+	  Support for the 0X810 SoC
+
+config OXNAS_VERSION_0X850
+	bool "0X850"
+	help
+	  Support for the 0X850 SoC
+endchoice
+
+config ARCH_OXNAS_UART1
+	bool "Support UART1"
+	default n
+	help
+		This enables UART1 to be accessible to Linux.
+		UARTs will be mapped to ttySn numbers from UART1 to UART4, only
+		including those UARTs selected to be present
+
+config ARCH_OXNAS_UART1_MODEM
+	bool "Support UART1 modem control lines"
+	depends on ARCH_OXNAS_UART1
+	default n
+	help
+		Multiplex the modem control lines from UART1 onto external pins
+
+config ARCH_OXNAS_UART2
+	bool "Support UART2"
+	default n
+	help
+		This enables UART2 to be accessible to Linux
+		UARTs will be mapped to ttySn numbers from UART1 to UART4, only
+		including those UARTs selected to be present
+
+config ARCH_OXNAS_UART2_MODEM
+	bool "Support UART2 modem control lines"
+	depends on ARCH_OXNAS_UART2
+	default n
+	help
+		Multiplex the modem control lines from UART2 onto external pins
+
+config ARCH_OXNAS_UART3
+	bool "Support UART3"
+	default n
+	help
+		This enables UAR3 to be accessible to Linux
+		UARTs will be mapped to ttySn numbers from UART1 to UART4, only
+		including those UARTs selected to be present
+
+config ARCH_OXNAS_UART3_MODEM
+	bool "Support UART3 modem control lines"
+	depends on ARCH_OXNAS_UART3
+	default n
+	help
+		Multiplex the modem control lines from UART3 onto external pins
+
+config ARCH_OXNAS_UART4
+	bool "Support UART4"
+	depends on !PCI
+	default n
+	help
+		This enables UART4 to be accessible to Linux
+		UARTs will be mapped to ttySn numbers from UART1 to UART4, only
+		including those UARTs selected to be present
+		UART4 always has its modem control lines available on external pins
+		when selected (overlaying PCI functions)
+
+config ARCH_OXNAS_CONSOLE_UART
+	int "The UART displaying console boot messages"
+	depends on ARCH_OXNAS
+	default 2
+	help
+		We should not reset the UART that is already in use as the
+		console during boot
+
+config ARCH_OXNAS_PCI_REQGNT_0
+	bool "Enable req/gnt for PCI device 0"
+	depends on PCI
+	default n
+	help
+
+config ARCH_OXNAS_PCI_REQGNT_1
+	bool "Enable req/gnt for PCI device 1"
+	depends on PCI
+	default n
+	help
+
+config ARCH_OXNAS_PCI_REQGNT_2
+	bool "Enable req/gnt for PCI device 2"
+	depends on PCI
+	default n
+	help
+
+config ARCH_OXNAS_PCI_REQGNT_3
+	bool "Enable req/gnt for PCI device 3"
+	depends on PCI
+	default n
+	help
+
+config ARCH_OXNAS_PCI_CLKOUT_0
+	bool "Enable PCI clock output 0"
+	depends on PCI
+	default n
+	help
+
+config ARCH_OXNAS_PCI_CLKOUT_1
+	bool "Enable PCI clock output 1"
+	depends on PCI
+	default n
+	help
+
+config ARCH_OXNAS_PCI_CLKOUT_2
+	bool "Enable PCI clock output 2"
+	depends on PCI
+	default n
+	help
+
+config ARCH_OXNAS_PCI_CLKOUT_3
+	bool "Enable PCI clock output 3"
+	depends on PCI
+	default n
+	help
+
+config OXNAS_PCI_RESET
+	bool "Allow PCI reset to be toggled after power up"
+	depends on PCI
+	default n
+	help
+		The SoC requires that the PCI bus reset be toggled after the
+		rest of the SoC has emerged from reset
+
+config OXNAS_PCI_RESET_GPIO
+	int "GPIO line connected to PCI reset"
+	depends on OXNAS_PCI_RESET
+	default 12
+	help
+		The PCI bus requires a separate reset to be asserted after the
+		reset of the SoC has emerged from reset. This defines the GPIO
+		line which is connected to the PCI reset
+
+config OXNAS_SATA_POWER_1
+	bool "Allow control of SATA 1 disk power via GPIO"
+	default n
+	help
+		Allow SATA disk 1 power to be turned off via GPIO lines
+
+config OXNAS_SATA_POWER_GPIO_1
+	int "GPIO line connected to SATA power control for disk 1"
+	depends on OXNAS_SATA_POWER_1
+	default 15
+	help
+		The GPIO line that controls SATA disk 1 power
+
+config OXNAS_SATA_POWER_2
+	bool "Allow control of SATA disk 2 power via GPIO"
+	default n
+	help
+		Allow SATA disk 2 power to be turned off via GPIO lines
+
+config OXNAS_SATA_POWER_GPIO_2
+	int "GPIO line connected to SATA power control for disk 2"
+	depends on OXNAS_SATA_POWER_2
+	default 18
+	help
+		The GPIO line that controls SATA disk 2 power
+
+config FORCE_MAX_ZONEORDER
+	int "Max order of zoned buddy allocator"
+	default 11
+	help
+		The value to be assigned to MAX_ORDER
+
+config SRAM_NUM_PAGES
+	int "The number of SRAM memory pages present in the system"
+	default 8
+	help
+		Determines the number of pages of SRAM that are assumed to exist in the
+		system memory map
+
+config SUPPORT_LEON
+	bool "Include support for Leon"
+	default n
+
+config LEON_PAGES
+	int "The number of 4K pages of SRAM to reserve for the LEON program"
+	depends on SUPPORT_LEON
+	default 2
+	help
+		Determines the number of 4K pages of SRAM that are reserved for the
+		LEON program
+
+config LEON_COPRO
+	bool "Load LEON networking acceleration program"
+	depends on SUPPORT_LEON && OXNAS_VERSION_0X810
+	default n
+
+config LEON_OFFLOAD_TX
+	bool "Whether network Tx operations should be offloaded to the LEON"
+	depends on LEON_COPRO
+	default n
+
+config LEON_RESERVE_DMA_CHANNEL
+	bool "Whether to reserve the last DMA channel for the CoPro's use"
+	depends on LEON_OFFLOAD_TX
+	default n
+
+config LEON_OFFLOAD_TSO
+	bool "Whether network TSO operations should be offloaded to the LEON"
+	depends on LEON_OFFLOAD_TX
+	default n
+
+config LEON_START_EARLY
+	bool "Load LEON early startup program"
+	depends on SUPPORT_LEON
+	default n
+	help
+		For situations where the LEON is to run some code unrelated to
+		its normal network acceleration functions, this options causes
+		the LEON code to be loaded and the LEON started early in the
+		boot process
+
+config LEON_POWER_BUTTON_MONITOR
+	tristate "Load LEON power button monitoring program"
+	depends on SUPPORT_LEON
+	default n
+	help
+		Support powering down the system via a GPIO button and when the
+		system is powered down load a LEON program that will monitor the
+		button for attempts to power the system back on
+
+config OXNAS_POWER_BUTTON_GPIO
+	int "GPIO line connected to power button"
+	depends on LEON_POWER_BUTTON_MONITOR
+	default 33
+	help
+		Specifies the GPIO line to which the power button is connected
+
+config USER_RECOVERY_BUTTON_MONITOR
+	tristate "Load user recovery button monitoring program"
+	default n
+	help
+		Support User recovery of the system via a GPIO button. When the
+		system is power cycled after the use of this button, the admin
+		password and network settings are set to factory values.
+
+config OXNAS_USER_RECOVERY_BUTTON_GPIO
+	int "GPIO line connected to user recovery button"
+	depends on USER_RECOVERY_BUTTON_MONITOR
+	default 32
+	help
+		Specifies the GPIO line to which the user recovery button is
+		connected.
+
+config OXNAS_DDR_MON
+	bool "Poll the DDR core bus monitors from timer tick interrupt"
+	default n
+
+config OXNAS_AHB_MON
+	bool "Include support for AHB monitors"
+	default n
+
+config OXNAS_MONITOR_SUBSAMPLE
+	int "Jiffy subsample factor for AHB monitor sampling"
+	depends on OXNAS_AHB_MON || OXNAS_DDR_MON
+	default 10
+	help
+		The factor by which to subsample the jiffy count to produce AHB monitor
+		sampling events
+
+config OXNAS_CACHE_LOCKDOWN
+	bool "Allow locking down part of the caches"
+	default n
+
+config OXNAS_CACHE_I_MASK
+	int "Bit mask for I cache lockdown"
+	depends on OXNAS_CACHE_LOCKDOWN
+	default 0
+	help
+		Allowable values are:
+		0 - No ways locked down
+		1 - One way locked down
+		3 - Two ways locked down
+		7 - Three ways locked down
+
+config OXNAS_CACHE_D_MASK
+	int "Bit mask for D cache lockdown"
+	depends on OXNAS_CACHE_LOCKDOWN
+	default 0
+	help
+		Allowable values are:
+		0 - No ways locked down
+		1 - One way locked down
+		3 - Two ways locked down
+		7 - Three ways locked down
+
+config DO_MEM_TEST
+	bool "Perform memory copy throughput test during boot"
+	default 0
+
+config CRYPTO_OXAESLRW
+	tristate "LRW-AES hardware support"
+	help
+	  Driver for controlling the Ox-Semi OX800 cipher core for LRW-AES
+	  encryption
+
+config DESCRIPTORS_PAGES
+	int "The number of SRAM memory pages to reserve for DMA descriptors"
+	default 1
+	help
+		Determines the number of pages of SRAM that are reserved for DMA
+		descriptors
+
+config ARCH_OXNAS_NUM_GMAC_DESCRIPTORS
+	int "The number of GMAC descriptors to allocate"
+	default 112
+
+config ARCH_OXNAS_MAX_SATA_SG_ENTRIES
+	int "The max. number of SG DMA descriptors to use in the single transfer"
+	default 64
+
+config TACHO_THERM_AND_FAN
+	tristate "Include support for the temperature sensing, and automatic fan control"
+	default n
+
+config GPIO_TEST
+	tristate "Device driver for exercising GPIO block."
+	default n
+	help
+	  Connect the I2C serial lines (SCLK, SCS, and SDT) together to run test
+
+config OXNAS_RTC
+	tristate "Probe for m41t00 RTC"
+	select I2C
+	select I2C_ALGOBIT
+	select I2C_OXNAS_BITBASH
+	select RTC_CLASS
+	select RTC_DRV_DS1307
+	default n
+	help
+	  The M41T00 RTC provides basic time save and restore.
+	  The device is probed for on the OXNAS bit-bash I2C bus.
+
+config I2S
+	tristate "I2S test interface"
+	default n
+	help
+	  Say Y here to use i2s
+	  This support is also available as a module. If so, the module will be
+	  called i2s.
+
+config PCI_OXNAS_CARDBUS
+    bool "Switches from a PCI/Mini-PCI bus to a Cardbus bus."
+    depends on PCI && ARCH_OXNAS_FPGA
+    ---help---
+      This option limits scanning of the bus to omit the Via SATA interface.
+      This makes the bus compatible with cardbus cards that expect to be the
+      only PCI device on the bus.
+
+config DPE_TEST
+	tristate "Test the DPE core"
+	default n
+
+config OXNAS_EARLY_PRINTK
+	bool "Whether to output to printascii from printk"
+	depends on DEBUG_LL
+	help
+		If both CONFIG_DEBUG_LL and this option are selected, then each printk
+		call will duplicate the message in a call to printascii to get very
+		early console output
+
+config OXNAS_INSTRUMENT_COPIES
+	bool "Instrument copy_to_user and copy_from_user"
+	default n
+
+config OXNAS_INSTRUMENT_COPIES_THRESHOLD
+	int "The threshold above which copies will be instrumented"
+	depends on OXNAS_INSTRUMENT_COPIES
+	default 0
+
+config OXNAS_INSTRUMENT_COPIES_TIME
+	bool "Whether to print copy timing to console"
+	depends on OXNAS_INSTRUMENT_COPIES
+	default n
+
+config OXNAS_INSTRUMENT_COPIES_GPIO
+	bool "Whether to toggle a GPIO around copies"
+	depends on OXNAS_INSTRUMENT_COPIES
+	default n
+
+config OXNAS_DMA_COPIES
+	bool "Whether to use DMA for larger user-kernel copies"
+	default n
+
+config OXNAS_DMA_COPY_THRESHOLD
+	int "The threshold above which DMA will be used for copies"
+	depends on OXNAS_DMA_COPIES
+	default 1024
+
+config OXNAS_AHB_MONITOR_MODULE
+	tristate "Creates a loadable module to control the AHB monitors"
+	default n
+	help
+		This module publishes the current values of the AHB
+		monitors in the /proc filing system.
+		The monitors can be controlled by writing into this
+		filing system
+
+config OXNAS_USB_TEST_MODES
+	tristate "Create a loadable module to control the USB port test modes"
+	default n
+	help
+		This module reports the port status and allows setting
+		of the test mode in the port register via the /proc
+		filing system.
+
+config OXNAS_FRONT_LAMP_CONTROL
+	tristate "Front Panel LED control system"
+	depends on LEDS_CLASS
+	default n
+	help
+		This module reports drives a number of GPIOs as PWM signals to drive
+		front panel LEDs. The pattern displayed is dependent on system state.
+
+config LEDS_TRIGGER_SATA_DISK
+	tristate "Front Panel SATA disk activity lamp control system"
+	default n
+	help
+		This module reports drives the SATA disk activity lamp.
+
+config OXNAS_LED_TEST
+	bool "Exercise the WD LEDs"
+	default n
+
+config OXNAS_I2C_SDA
+	int "I2C bit-bash data line"
+	default 2
+
+config OXNAS_I2C_SCL
+	int "I2C bit-bash clock line"
+	default 3
+
+config	OXNAS_USB_PORTA_POWER_CONTROL
+	bool "Support USB port A power control lines"
+	default n
+	help
+		Whether to support power switch out and monitor in via GPIOs
+		for USB port A
+
+config	OXNAS_USB_PORTB_POWER_CONTROL
+	bool "Support USB port B power control lines"
+	default n
+	help
+		Whether to support power switch out and monitor in via GPIOs
+		for USB port B
+
+config	OXNAS_USB_PORTC_POWER_CONTROL
+	bool "Support USB port C power control lines"
+	default n
+	help
+		Whether to support power switch out and monitor in via GPIOs
+		for USB port C
+
+config OXNAS_USB_OVERCURRENT_POLARITY_NEGATIVE
+	bool "Set USB power monitor input polarity to negative"
+	default n
+	help
+		n - Positive polarity
+		y - Negative polarity
+
+config OXNAS_USB_POWER_SWITCH_POLARITY_NEGATIVE
+	bool "Set USB power switch output polarity to negative"
+	default n
+	help
+		n - Positive polarity
+		y - Negative polarity
+
+config WDC_FAN_OXNAS800
+	tristate "WD NetCenter/2NC Fan control driver"
+	default n
+	help
+		This driver allows user-mode applications to control the cooling
+		fan on Western Digital's NetCenter/2NC platform.
+
+config OXNAS_MAP_SRAM
+	bool "Allow part of kernel to be mapped into SRAM"
+	default n
+
+config OXNAS_COPY_CODE_TO_SRAM
+	bool "Copy part of kernel to SRAM"
+	depends on OXNAS_MAP_SRAM
+	default n
+
+config OXNAS_SUID_INHERIT
+	bool "Make SUID be inherited by subdirectories"
+	default n
+
+config OXNAS_USB_HUB_SUPPORT
+	bool "Enable support for on-board USB hub"
+	default n
+
+config OXNAS_USB_CKOUT
+	bool "Enable output of 12MHz USB clock on GPIO 10"
+	depends on OXNAS_USB_HUB_SUPPORT
+	default n
+
+config OXNAS_USB_HUB_RESET_CONTROL
+	bool "Control the USB hub reset line"
+	depends on OXNAS_USB_HUB_SUPPORT
+	default n
+
+config OXNAS_USB_HUB_RESET_GPIO
+	int "The GPIO connected to the USB hub reset"
+	depends on OXNAS_USB_HUB_RESET_CONTROL
+	default 27
+
+config OXNAS_USB_HUB_RESET_ACTIVE_HIGH
+	int "Set to 1 for active high, 0 for active low reset"
+	depends on OXNAS_USB_HUB_RESET_CONTROL
+	default 1
+
+config OXNAS_USB_HUB_RESET_TOGGLE
+	bool "Select to toggle reset, do not select to just deassert reset"
+	depends on OXNAS_USB_HUB_RESET_CONTROL
+	default y
+
+config OXNAS_USB_HUB_RESET_PERIOD_MS
+	int "The period for which the USB hub reset should be asserted in milliseconds"
+	depends on OXNAS_USB_HUB_RESET_TOGGLE
+	default 100
+
+endmenu
+
+endif

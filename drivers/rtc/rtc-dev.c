@@ -264,7 +264,8 @@ static int rtc_dev_ioctl(struct inode *inode, struct file *file,
 
 		alarm.enabled = 0;
 		alarm.pending = 0;
-		alarm.time.tm_wday = -1;
+                // this is for rtc-rs5c372, Thecus N3200 used
+//		alarm.time.tm_wday = -1;
 		alarm.time.tm_yday = -1;
 		alarm.time.tm_isdst = -1;
 
@@ -297,13 +298,14 @@ static int rtc_dev_ioctl(struct inode *inode, struct file *file,
 				return err;
 			rtc_tm_to_time(&alarm.time, &then);
 
-			/* alarm may need to wrap into tomorrow */
-			if (then < now) {
+			// alarm may need to wrap into tomorrow
+/*			if (then < now) {
 				rtc_time_to_tm(now + 24 * 60 * 60, &tm);
 				alarm.time.tm_mday = tm.tm_mday;
 				alarm.time.tm_mon = tm.tm_mon;
 				alarm.time.tm_year = tm.tm_year;
 			}
+*/
 		}
 
 		err = rtc_set_alarm(rtc, &alarm);
