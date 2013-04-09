@@ -368,16 +368,56 @@ static inline unsigned long copy_from_user(void *to, const void __user *from, un
 	return n;
 }
 
+#ifdef CONFIG_OXNAS_DMA_COPIES
+extern unsigned long oxnas_copy_from_user(void *to, const void __user *from, unsigned long n);
+//extern unsigned long oxnas_copy_to_user(void __user *to, const void *from, unsigned long n);
+#endif // CONFIG_OXNAS_DMA_COPIES
+
+#include <asm/arch/hardware.h>
 static inline unsigned long __copy_from_user(void *to, const void __user *from, unsigned long n)
 {
-	return __arch_copy_from_user(to, from, n);
+//unsigned long result;
+
+#ifdef CONFIG_OXNAS_DMA_COPIES
+    if (n > CONFIG_OXNAS_DMA_COPY_THRESHOLD) {
+unsigned long start, end;
+start = *((volatile unsigned long*)TIMER2_VALUE);
+        result = oxnas_copy_from_user(to, from, n);
+end = *((volatile unsigned long*)TIMER2_VALUE);
+printk("F %lu: start = 0x%08lx, end = 0x%08lx\n", n, start, end);
+        return result;
+    } else {
+        return __arch_copy_from_user(to, from, n);
+    }
+#else
+//unsigned long start, end;
+//if (n > 1400) {
+//    start = *((volatile unsigned long*)TIMER2_VALUE);
+//}
+//    result = __arch_copy_from_user(to, from, n);
+//if (n > 1400) {
+//    end = *((volatile unsigned long*)TIMER2_VALUE);
+//    printk("F %lu: start = 0x%08lx, end = 0x%08lx\n", n, start, end);
+//}
+//   return result;
+    return __arch_copy_from_user(to, from, n);
+#endif // CONFIG_OXNAS_DMA_COPIES
 }
 
 static inline unsigned long copy_to_user(void __user *to, const void *from, unsigned long n)
 {
-	if (access_ok(VERIFY_WRITE, to, n))
-		n = __arch_copy_to_user(to, from, n);
-	return n;
+    if (access_ok(VERIFY_WRITE, to, n)) {
+//#ifdef CONFIG_OXNAS_DMA_COPIES
+//        if (n > CONFIG_OXNAS_DMA_COPY_THRESHOLD) {
+//            n = oxnas_copy_to_user(to, from, n);
+//        } else {
+//            n = __arch_copy_to_user(to, from, n);
+//        }
+//#else
+        n = __arch_copy_to_user(to, from, n);
+//#endif // CONFIG_OXNAS_DMA_COPIES
+    }
+    return n;
 }
 
 static inline unsigned long __copy_to_user(void __user *to, const void *from, unsigned long n)

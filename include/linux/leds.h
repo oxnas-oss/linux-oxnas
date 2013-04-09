@@ -107,4 +107,11 @@ extern void ledtrig_ide_activity(void);
 #define ledtrig_ide_activity() do {} while(0)
 #endif
 
+/* Trigger specific functions */
+#ifdef CONFIG_WDC_LEDS_TRIGGER_SATA_DISK
+extern void wdc_ledtrig_sata_activity(void);
+#else
+#define wdc_ledtrig_sata_activity() do {} while(0)
+#endif
+
 #endif		/* __LINUX_LEDS_H_INCLUDED */

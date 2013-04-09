@@ -25,13 +25,13 @@
 #ifndef VELOCITY_H
 #define VELOCITY_H
 
-#define VELOCITY_TX_CSUM_SUPPORT
-
 #define VELOCITY_NAME          "via-velocity"
 #define VELOCITY_FULL_DRV_NAM  "VIA Networking Velocity Family Gigabit Ethernet Adapter Driver"
 #define VELOCITY_VERSION       "1.13"
 
-#define PKT_BUF_SZ          1540
+#define VELOCITY_IO_SIZE	256
+
+#define PKT_BUF_SZ          ETH_ZLEN
 
 #define MAX_UNITS           8
 #define OPTION_DEFAULT      { [0 ... MAX_UNITS-1] = -1}
@@ -307,7 +307,7 @@ enum  velocity_owner {
 #define TX_QUEUE_NO         4
 
 #define MAX_HW_MIB_COUNTER  32
-#define VELOCITY_MIN_MTU    (1514-14)
+#define VELOCITY_MIN_MTU    (64)
 #define VELOCITY_MAX_MTU    (9000)
 
 /*
@@ -733,6 +733,8 @@ enum  velocity_owner {
 /*
  *	Bits in the CFGA register
  */
+#define CFGA_PHYLEDS1       0x20
+#define CFGA_PHYLEDS0       0x10
 
 #define CFGA_PMHCTG         0x08
 #define CFGA_GPIO1PD        0x04
@@ -783,6 +785,7 @@ enum  velocity_owner {
 #define DCFG_XMRM           0x4000
 #define DCFG_XMRL           0x2000
 #define DCFG_PERDIS         0x1000
+#define DCFG_MRDPL          0x0800
 #define DCFG_MRWAIT         0x0400
 #define DCFG_MWWAIT         0x0200
 #define DCFG_LATMEN         0x0100
@@ -1191,7 +1194,6 @@ enum chip_type {
 struct velocity_info_tbl {
 	enum chip_type chip_id;
 	char *name;
-	int io_size;
 	int txqueue;
 	u32 flags;
 };
@@ -1220,10 +1222,6 @@ struct velocity_info_tbl {
 	}\
 }
 
-#define mac_set_dma_length(regs, n) {\
-	BYTE_REG_BITS_SET((n),0x07,&((regs)->DCFG));\
-}
-
 #define mac_set_rx_thresh(regs, n) {\
 	BYTE_REG_BITS_SET((n),(MCFG_RFT0|MCFG_RFT1),&((regs)->MCFG));\
 }
@@ -1242,17 +1240,6 @@ struct velocity_info_tbl {
 
 #define mac_tx_queue_wake(regs, n) {\
 	writew(TRDCSR_WAK<<(n*4),&((regs)->TDCSRSet));\
-}
-
-#define mac_eeprom_reload(regs) {\
-	int i=0;\
-	BYTE_REG_BITS_ON(EECSR_RELOAD,&((regs)->EECSR));\
-	do {\
-		udelay(10);\
-		if (i++>0x1000) {\
-			break;\
-		}\
-	}while (BYTE_REG_BITS_IS_ON(EECSR_RELOAD,&((regs)->EECSR)));\
 }
 
 enum velocity_cam_type {
@@ -1720,7 +1707,8 @@ struct velocity_opt {
 	int numtx;			/* Number of TX descriptors */
 	enum speed_opt spd_dpx;		/* Media link mode */
 	int vid;			/* vlan id */
-	int DMA_length;			/* DMA length */
+	int DMA_length_100M;	/* DMA length at 100Mb/s */
+	int DMA_length_1000M;	/* DMA length at 1Gb/s */
 	int rx_thresh;			/* RX_THRESH */
 	int flow_cntl;
 	int wol_opts;			/* Wake on lan options */
@@ -1751,7 +1739,6 @@ struct velocity_info {
 	struct mac_regs __iomem * mac_regs;
 	unsigned long memaddr;
 	unsigned long ioaddr;
-	u32 io_size;
 
 	u8 rev_id;
 
@@ -1782,7 +1769,6 @@ struct velocity_info {
 	int rx_buf_sz;
 	u32 mii_status;
 	u32 phy_id;
-	int multicast_limit;
 
 	u8 vCAMmask[(VCAM_SIZE / 8)];
 	u8 mCAMmask[(MCAM_SIZE / 8)];
@@ -1824,32 +1810,6 @@ static inline int velocity_get_ip(struct velocity_info *vptr)
 		}
 	}
 	return -ENOENT;
-}
-
-/**
- *	velocity_update_hw_mibs	-	fetch MIB counters from chip
- *	@vptr: velocity to update
- *
- *	The velocity hardware keeps certain counters in the hardware
- * 	side. We need to read these when the user asks for statistics
- *	or when they overflow (causing an interrupt). The read of the
- *	statistic clears it, so we keep running master counters in user
- *	space.
- */
-
-static inline void velocity_update_hw_mibs(struct velocity_info *vptr)
-{
-	u32 tmp;
-	int i;
-	BYTE_REG_BITS_ON(MIBCR_MIBFLSH, &(vptr->mac_regs->MIBCR));
-
-	while (BYTE_REG_BITS_IS_ON(MIBCR_MIBFLSH, &(vptr->mac_regs->MIBCR)));
-
-	BYTE_REG_BITS_ON(MIBCR_MPTRINI, &(vptr->mac_regs->MIBCR));
-	for (i = 0; i < HW_MIB_SIZE; i++) {
-		tmp = readl(&(vptr->mac_regs->MIBData)) & 0x00FFFFFFUL;
-		vptr->mib_counter[i] += tmp;
-	}
 }
 
 /**

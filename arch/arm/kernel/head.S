@@ -73,6 +73,27 @@
 ENTRY(stext)
 	msr	cpsr_c, #PSR_F_BIT | PSR_I_BIT | MODE_SVC @ ensure svc mode
 						@ and irqs disabled
+
+#ifdef CONFIG_OXNAS_CACHE_LOCKDOWN
+	/*
+	 * Lock down ICache - do not care what ends up in locked down ways -
+	 * eventually context switch etc will flush out anything that gets loaded
+	 * next
+	 */
+	mrc p15,0,r2,c9,c0,1
+	orr r2,r2,#CONFIG_OXNAS_CACHE_I_MASK
+	mcr p15,0,r2,c9,c0,1
+
+	/*
+	 * Lock down DCache - do not care what ends up in locked down ways -
+	 * eventually context switch etc will flush out anything that gets loaded
+	 * next
+	 */
+	mrc p15,0,r2,c9,c0,0
+	orr r2,r2,#CONFIG_OXNAS_CACHE_D_MASK
+	mcr p15,0,r2,c9,c0,0
+#endif // CONFIG_OXNAS_CACHE_LOCKDOWN
+
 	mrc	p15, 0, r9, c0, c0		@ get processor id
 	bl	__lookup_processor_type		@ r5=procinfo r9=cpuid
 	movs	r10, r5				@ invalid processor (r5=0)?

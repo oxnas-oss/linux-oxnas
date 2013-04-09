@@ -109,7 +109,8 @@ enum {
 	ATA_MAX_PORTS		= 8,
 	ATA_DEF_QUEUE		= 1,
 	ATA_MAX_QUEUE		= 1,
-	ATA_MAX_SECTORS		= 200,	/* FIXME */
+//	ATA_MAX_SECTORS		= 200,	/* FIXME */
+	ATA_MAX_SECTORS		= 256,
 	ATA_MAX_BUS		= 2,
 	ATA_DEF_BUSY_WAIT	= 10000,
 	ATA_SHORT_PAUSE		= (HZ >> 6) + 1,
@@ -449,7 +450,10 @@ struct ata_port_operations {
 
 	void (*bmdma_setup) (struct ata_queued_cmd *qc);
 	void (*bmdma_start) (struct ata_queued_cmd *qc);
+	void (*bmdma_ack_irq)(struct ata_port *ap);
 
+    struct ata_queued_cmd* (*qc_new)(struct ata_port *ap);
+    void (*qc_free)(struct ata_queued_cmd *qc);
 	void (*qc_prep) (struct ata_queued_cmd *qc);
 	unsigned int (*qc_issue) (struct ata_queued_cmd *qc);
 
@@ -469,6 +473,11 @@ struct ata_port_operations {
 
 	void (*bmdma_stop) (struct ata_queued_cmd *qc);
 	u8   (*bmdma_status) (struct ata_port *ap);
+
+    unsigned int (*dev_chk)(struct ata_port *ap, unsigned int device);
+	void (*ata_irq_on)(struct ata_port *ap);
+	u8 (*ata_irq_ack)(struct ata_port *ap, unsigned int chk_drq);
+    void (*pio_task)(void* data);
 };
 
 struct ata_port_info {
@@ -526,6 +535,7 @@ extern void ata_host_set_remove(struct ata_host_set *host_set);
 extern int ata_scsi_detect(struct scsi_host_template *sht);
 extern int ata_scsi_ioctl(struct scsi_device *dev, int cmd, void __user *arg);
 extern int ata_scsi_queuecmd(struct scsi_cmnd *cmd, void (*done)(struct scsi_cmnd *));
+extern void ata_poll_qc_complete(struct ata_queued_cmd *qc);
 extern void ata_eh_qc_complete(struct ata_queued_cmd *qc);
 extern void ata_eh_qc_retry(struct ata_queued_cmd *qc);
 extern int ata_scsi_release(struct Scsi_Host *host);
@@ -759,6 +769,7 @@ static inline u8 ata_wait_idle(struct ata_port *ap)
 
 static inline void ata_qc_set_polling(struct ata_queued_cmd *qc)
 {
+    DPRINTK("ata_qc_set_polling\n");
 	qc->tf.ctl |= ATA_NIEN;
 }
 
@@ -831,7 +842,9 @@ static inline u8 ata_irq_on(struct ata_port *ap)
 	ap->ctl &= ~ATA_NIEN;
 	ap->last_ctl = ap->ctl;
 
-	if (ap->flags & ATA_FLAG_MMIO)
+    if (ap->ops->ata_irq_on)
+        ap->ops->ata_irq_on(ap);
+	else if (ap->flags & ATA_FLAG_MMIO)
 		writeb(ap->ctl, (void __iomem *) ioaddr->ctl_addr);
 	else
 		outb(ap->ctl, ioaddr->ctl_addr);
@@ -908,6 +921,19 @@ static inline void scr_write_flush(struct ata_port *ap, unsigned int reg,
 static inline unsigned int sata_dev_present(struct ata_port *ap)
 {
 	return ((scr_read(ap, SCR_STATUS) & 0xf) == 0x3) ? 1 : 0;
+}
+
+static inline void ata_bmdma_ack_irq(struct ata_port *ap)
+{
+    if (ap->ops->bmdma_ack_irq)
+        ap->ops->bmdma_ack_irq(ap);
+	else if (ap->flags & ATA_FLAG_MMIO) {
+		void __iomem *mmio = ((void __iomem *) ap->ioaddr.bmdma_addr) + ATA_DMA_STATUS;
+		writeb(readb(mmio), mmio);
+	} else {
+		unsigned long addr = ap->ioaddr.bmdma_addr + ATA_DMA_STATUS;
+		outb(inb(addr), addr);
+	}
 }
 
 static inline int ata_try_flush_cache(const struct ata_device *dev)

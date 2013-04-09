@@ -138,7 +138,7 @@ EXPORT_SYMBOL(do_softirq);
 
 void local_bh_enable(void)
 {
-	WARN_ON(irqs_disabled());
+	//WARN_ON(irqs_disabled());
 	/*
 	 * Keep preemption disabled until we are done with
 	 * softirq processing:

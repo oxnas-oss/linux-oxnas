@@ -92,6 +92,7 @@ extern struct net_device *mac89x0_probe(int unit);
 extern struct net_device *mc32_probe(int unit);
 extern struct net_device *cops_probe(int unit);
 extern struct net_device *ltpc_probe(void);
+extern struct net_device *synopsys_gmac_probe(int unit);
   
 /* Detachable devices ("pocket adaptors") */
 extern struct net_device *de620_probe(int unit);
@@ -199,6 +200,12 @@ static struct devprobe2 isa_probes[] __initdata = {
 #endif
 #ifdef CONFIG_SMC9194
 	{smc_init, 0},
+#endif
+#ifdef CONFIG_SMC91X
+	{smc_init, 0},
+#endif
+#ifdef CONFIG_SYNOPSYS_GMAC
+    {synopsys_gmac_probe, 0},
 #endif
 #ifdef CONFIG_SEEQ8005 
 	{seeq8005_probe, 0},

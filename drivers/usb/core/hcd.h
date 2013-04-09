@@ -354,6 +354,11 @@ extern long usb_calc_bus_time (int speed, int is_input,
 
 extern struct usb_bus *usb_alloc_bus (struct usb_operations *);
 
+extern int usb_register_root_hub (struct usb_device *usb_dev,
+		struct device *parent_dev);
+
+extern void usb_hcd_release (struct usb_bus *);
+
 extern void usb_set_device_state(struct usb_device *udev,
 		enum usb_device_state new_state);
 

@@ -72,8 +72,8 @@ CFLAGS_ABI	:=$(call cc-option,-mapcs-32,-mabi=apcs-gnu) $(call cc-option,-mno-th
 endif
 
 # Need -Uarm for gcc < 3.x
-CFLAGS		+=$(CFLAGS_ABI) $(arch-y) $(tune-y) $(call cc-option,-mshort-load-bytes,$(call cc-option,-malignment-traps,)) -msoft-float -Uarm
-AFLAGS		+=$(CFLAGS_ABI) $(arch-y) $(tune-y) -msoft-float
+CFLAGS		+=$(CFLAGS_ABI) $(arch-y) $(tune-y) $(call cc-option,-mshort-load-bytes,$(call cc-option,-malignment-traps,)) -Uarm
+AFLAGS		+=$(CFLAGS_ABI) $(arch-y) $(tune-y)
 
 CHECKFLAGS	+= -D__arm__
 
@@ -112,6 +112,7 @@ endif
  machine-$(CONFIG_ARCH_VERSATILE)  := versatile
  machine-$(CONFIG_ARCH_IMX)	   := imx
  machine-$(CONFIG_ARCH_H720X)	   := h720x
+ machine-$(CONFIG_ARCH_OXNAS)	   := oxnas
  machine-$(CONFIG_ARCH_AAEC2000)   := aaec2000
  machine-$(CONFIG_ARCH_REALVIEW)   := realview
  machine-$(CONFIG_ARCH_AT91RM9200) := at91rm9200

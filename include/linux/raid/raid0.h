@@ -21,6 +21,10 @@ struct raid0_private_data
 
 	sector_t hash_spacing;
 	int preshift;			/* shift this before divide by hash_spacing */
+
+    /** This contains flags in the correct format so that they can be ORed over
+    * the ox800 sata core hardware RAID register to set the correct RAID mode */
+    u32 hw_raid0_settings;
 };
 
 typedef struct raid0_private_data raid0_conf_t;

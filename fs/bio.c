@@ -141,6 +141,7 @@ void bio_init(struct bio *bio)
 	bio->bi_end_io = NULL;
 	atomic_set(&bio->bi_cnt, 1);
 	bio->bi_private = NULL;
+    bio->bi_raid = 0;
 }
 
 /**
@@ -270,6 +271,8 @@ void __bio_clone(struct bio *bio, struct bio *bio_src)
 	bio->bi_idx = bio_src->bi_idx;
 	bio_phys_segments(q, bio);
 	bio_hw_segments(q, bio);
+
+    bio->bi_raid = bio_src->bi_raid;
 }
 
 /**
@@ -1125,6 +1128,9 @@ struct bio_pair *bio_split(struct bio *bi, mempool_t *pool, int first_sectors)
 
 	bp->bio1.bi_private = bi;
 	bp->bio2.bi_private = pool;
+
+	bp->bio1.bi_raid = bi->bi_raid;
+	bp->bio2.bi_raid = bi->bi_raid;
 
 	return bp;
 }

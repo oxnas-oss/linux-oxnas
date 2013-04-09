@@ -258,13 +258,19 @@ void mii_check_link (struct mii_if_info *mii)
 		netif_carrier_off(mii->dev);
 }
 
-unsigned int mii_check_media (struct mii_if_info *mii,
-			      unsigned int ok_to_print,
-			      unsigned int init_media)
+unsigned int mii_check_media(
+    struct mii_if_info *mii,
+    unsigned int ok_to_print,
+    unsigned int init_media)
 {
 	unsigned int old_carrier, new_carrier;
 	int advertise, lpa, media, duplex;
 	int lpa2 = 0;
+    int duplex_changed = 0;
+    int changed_100 = 0;
+    int changed_1000 = 0;
+    int using_100 = 0;
+    int using_1000 = 0;
 
 	/* if forced media, go no further */
 	if (mii->force_media)
@@ -310,18 +316,154 @@ unsigned int mii_check_media (struct mii_if_info *mii,
 	if (lpa2 & LPA_1000FULL)
 		duplex = 1;
 
+    /* Remember the rate we're operating at */
+    using_100 = 0;
+    using_1000 = 0;
+    if (lpa2 & (LPA_1000FULL | LPA_1000HALF)) {
+        using_1000 = 1;
+    } else if (media & (ADVERTISE_100FULL | ADVERTISE_100HALF)) {
+        using_100 = 1;
+    }
+
 	if (ok_to_print)
 		printk(KERN_INFO "%s: link up, %sMbps, %s-duplex, lpa 0x%04X\n",
 		       mii->dev->name,
-		       lpa2 & (LPA_1000FULL | LPA_1000HALF) ? "1000" :
-		       media & (ADVERTISE_100FULL | ADVERTISE_100HALF) ? "100" : "10",
+		       using_1000 ? "1000" :
+		       using_100 ? "100" : "10",
 		       duplex ? "full" : "half",
 		       lpa);
 
-	if ((init_media) || (mii->full_duplex != duplex)) {
-		mii->full_duplex = duplex;
-		return 1; /* duplex changed */
+    if (mii->full_duplex != duplex) {
+        duplex_changed = 1;
+    }
+    if (mii->using_100 != using_100) {
+        changed_100 = 1;
+    }
+    if (mii->using_1000 != using_1000) {
+        changed_1000 = 1;
+    }
+
+    if (init_media || changed_100 || changed_1000) {
+        mii->full_duplex = duplex;
+        mii->using_100   = using_100;
+        mii->using_1000  = using_1000;
+        return init_media || duplex_changed;
+    }
+
+	return 0; /* duplex did not change */
+}
+
+unsigned int mii_check_media_ex(
+    struct mii_if_info *mii,
+    unsigned int ok_to_print,
+    unsigned int init_media,
+    int *has_gigabit_changed)
+{
+	unsigned int old_carrier, new_carrier;
+	int advertise, lpa;
+	unsigned int negotiated_10_100;
+	int advertise2 = 0, lpa2 = 0;
+	unsigned int negotiated_1000;
+	int duplex = 0;
+	int using_100 = 0;
+	int using_1000 = 0;
+	int duplex_changed = 0;
+	int changed_100 = 0;
+	int changed_1000 = 0;
+
+    // Initialise user's location for returned gigabit changed value to no-change
+	*has_gigabit_changed = 0;
+
+	/* if forced media, go no further */
+	if (mii->force_media)
+		return 0; /* duplex did not change */
+
+	/* check current and old link status */
+	old_carrier = netif_carrier_ok(mii->dev) ? 1 : 0;
+	new_carrier = (unsigned int) mii_link_ok(mii);
+
+	/* if carrier state did not change, this is a "bounce",
+	 * just exit as everything is already set correctly
+	 */
+	if ((!init_media) && (old_carrier == new_carrier))
+		return 0; /* duplex did not change */
+
+	/* no carrier, nothing much to do */
+	if (!new_carrier) {
+		netif_carrier_off(mii->dev);
+		if (ok_to_print)
+			printk(KERN_INFO "%s: link down\n", mii->dev->name);
+		return 0; /* duplex did not change */
 	}
+
+	/*
+	 * we have carrier, see who's on the other end
+	 */
+	netif_carrier_on(mii->dev);
+
+	/* Get our advertise values */
+	if ((!init_media) && (mii->advertising))
+		advertise = mii->advertising;
+	else {
+		advertise = mii->mdio_read(mii->dev, mii->phy_id, MII_ADVERTISE);
+		mii->advertising = advertise;
+	}
+//printk("mii_check_media_ex() MII_ADVERTISE read as 0x%08x\n", advertise);
+	if (mii->supports_gmii) {
+		advertise2 = mii->mdio_read(mii->dev, mii->phy_id, MII_CTRL1000);
+//printk("mii_check_media_ex() MII_CTRL1000 read as 0x%08x\n", advertise2);
+	}
+
+	/* Get link partner advertise values */
+	lpa = mii->mdio_read(mii->dev, mii->phy_id, MII_LPA);
+//printk("mii_check_media_ex() MII_LPA read as 0x%08x\n", lpa);
+	if (mii->supports_gmii) {
+		lpa2 = mii->mdio_read(mii->dev, mii->phy_id, MII_STAT1000);
+//printk("mii_check_media_ex() MII_STAT1000 read as 0x%08x\n", lpa2);
+	}
+
+	/* Determine negotiated mode/duplex from our and link partner's advertise values */
+	negotiated_10_100 = mii_nway_result(lpa & advertise);
+	negotiated_1000   = mii_nway_result_1000(lpa2, advertise2);
+
+    /* Determine the rate we're operating at */
+	if (negotiated_1000 & (LPA_1000FULL | LPA_1000HALF)) {
+		using_1000 = 1;
+		duplex = (negotiated_1000 & LPA_1000FULL) ? 1 : 0;
+	} else {
+		if (negotiated_10_100 & (LPA_100FULL | LPA_100HALF)) {
+			using_100 = 1;
+		}
+		duplex = (negotiated_10_100 & ADVERTISE_FULL) ? 1 : 0;
+	}
+
+	if (ok_to_print)
+		printk(KERN_INFO "%s: link up, %sMbps, %s-duplex, lpa 0x%04X\n",
+		       mii->dev->name,
+		       using_1000 ? "1000" :
+		       using_100 ? "100" : "10",
+		       duplex ? "full" : "half",
+		       lpa);
+
+    if (mii->full_duplex != duplex) {
+        duplex_changed = 1;
+    }
+    if (mii->using_100 != using_100) {
+        changed_100 = 1;
+    }
+    if (mii->using_1000 != using_1000) {
+        changed_1000 = 1;
+    }
+
+    if (init_media || changed_100 || changed_1000 || duplex_changed) {
+        mii->full_duplex = duplex;
+        mii->using_100   = using_100;
+        mii->using_1000  = using_1000;
+        if (init_media || changed_1000) {
+            *has_gigabit_changed = 1;
+        }
+        return init_media || duplex_changed;
+    }
 
 	return 0; /* duplex did not change */
 }
@@ -408,6 +550,7 @@ EXPORT_SYMBOL(mii_ethtool_gset);
 EXPORT_SYMBOL(mii_ethtool_sset);
 EXPORT_SYMBOL(mii_check_link);
 EXPORT_SYMBOL(mii_check_media);
+EXPORT_SYMBOL(mii_check_media_ex);
 EXPORT_SYMBOL(mii_check_gmii_support);
 EXPORT_SYMBOL(generic_mii_ioctl);
 

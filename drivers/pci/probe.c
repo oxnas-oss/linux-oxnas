@@ -16,6 +16,8 @@
 #define PCI_CFG_SPACE_SIZE	256
 #define PCI_CFG_SPACE_EXP_SIZE	4096
 
+#define DEBUG
+
 /* Ugh.  Need to stop exporting this to modules. */
 LIST_HEAD(pci_root_buses);
 EXPORT_SYMBOL(pci_root_buses);
@@ -437,7 +439,7 @@ int __devinit pci_scan_bridge(struct pci_bus *bus, struct pci_dev * dev, int max
 
 	pci_read_config_dword(dev, PCI_PRIMARY_BUS, &buses);
 
-	pr_debug("PCI: Scanning behind PCI bridge %s, config %06x, pass %d\n",
+	printk("PCI: Scanning behind PCI bridge %s, config %06x, pass %d\n",
 		 pci_name(dev), buses & 0xffffff, pass);
 
 	/* Disable MasterAbortMode during probing to avoid reporting
@@ -643,7 +645,7 @@ static int pci_setup_device(struct pci_dev * dev)
 	dev->class = class;
 	class >>= 8;
 
-	pr_debug("PCI: Found %s [%04x/%04x] %06x %02x\n", pci_name(dev),
+	printk("PCI: Found %s [%04x/%04x] %06x %02x\n", pci_name(dev),
 		 dev->vendor, dev->device, class, dev->hdr_type);
 
 	/* "Unknown power state" */
@@ -877,8 +879,18 @@ int __devinit pci_scan_slot(struct pci_bus *bus, int devfn)
 	for (func = 0; func < 8; func++, devfn++) {
 		struct pci_dev *dev;
 
-		dev = pci_scan_single_device(bus, devfn);
-		if (dev) {
+#ifdef CONFIG_PCI_OXNAS_CARDBUS
+        // printk(KERN_INFO "pci_scan_slot %u\n", PCI_SLOT(devfn) );
+        scan_all_fns = 1;
+        if (  PCI_SLOT(devfn) == 5 )
+            dev = pci_scan_single_device(bus, devfn);
+        else
+            dev = 0;
+#else  /* ifndef CONFIG_OXNAS_CARDBUS */
+        dev = pci_scan_single_device(bus, devfn);
+#endif /* CONFIG_OXNAS_CARDBUS */
+
+        if (dev) {
 			nr++;
 
 			/*
@@ -905,7 +917,7 @@ unsigned int __devinit pci_scan_child_bus(struct pci_bus *bus)
 	unsigned int devfn, pass, max = bus->secondary;
 	struct pci_dev *dev;
 
-	pr_debug("PCI: Scanning bus %04x:%02x\n", pci_domain_nr(bus), bus->number);
+	printk("PCI: Scanning bus %04x:%02x\n", pci_domain_nr(bus), bus->number);
 
 	/* Go find them, Rover! */
 	for (devfn = 0; devfn < 0x100; devfn += 8)
@@ -915,7 +927,7 @@ unsigned int __devinit pci_scan_child_bus(struct pci_bus *bus)
 	 * After performing arch-dependent fixup of the bus, look behind
 	 * all PCI-to-PCI bridges on this bus.
 	 */
-	pr_debug("PCI: Fixups for bus %04x:%02x\n", pci_domain_nr(bus), bus->number);
+	printk("PCI: Fixups for bus %04x:%02x\n", pci_domain_nr(bus), bus->number);
 	pcibios_fixup_bus(bus);
 	for (pass=0; pass < 2; pass++)
 		list_for_each_entry(dev, &bus->devices, bus_list) {
@@ -931,7 +943,7 @@ unsigned int __devinit pci_scan_child_bus(struct pci_bus *bus)
 	 *
 	 * Return how far we've got finding sub-buses.
 	 */
-	pr_debug("PCI: Bus scan for %04x:%02x returning with max=%02x\n",
+	printk("PCI: Bus scan for %04x:%02x returning with max=%02x\n",
 		pci_domain_nr(bus), bus->number, max);
 	return max;
 }
@@ -972,7 +984,7 @@ struct pci_bus * __devinit pci_create_bus(struct device *parent,
 
 	if (pci_find_bus(pci_domain_nr(b), bus)) {
 		/* If we already got to this bus through a different bridge, ignore it */
-		pr_debug("PCI: Bus %04x:%02x already known\n", pci_domain_nr(b), bus);
+		printk("PCI: Bus %04x:%02x already known\n", pci_domain_nr(b), bus);
 		goto err_out;
 	}
 	spin_lock(&pci_bus_lock);

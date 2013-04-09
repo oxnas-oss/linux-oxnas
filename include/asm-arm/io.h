@@ -24,6 +24,7 @@
 #ifdef __KERNEL__
 
 #include <linux/types.h>
+#include <linux/kernel.h>
 #include <asm/byteorder.h>
 #include <asm/memory.h>
 
@@ -38,9 +39,12 @@
  * Generic IO read/write.  These perform native-endian accesses.  Note
  * that some architectures will want to re-define __raw_{read,write}w.
  */
-extern void __raw_writesb(void __iomem *addr, const void *data, int bytelen);
-extern void __raw_writesw(void __iomem *addr, const void *data, int wordlen);
-extern void __raw_writesl(void __iomem *addr, const void *data, int longlen);
+extern unsigned int pciio_read( u32 addr, unsigned int size );
+extern void pciio_write(unsigned int   data, u32 addr, unsigned int size );
+
+extern void __raw_writesb(const void __iomem *addr, const void *data, int bytelen);
+extern void __raw_writesw(const void __iomem *addr, const void *data, int wordlen);
+extern void __raw_writesl(const void __iomem *addr, const void *data, int longlen);
 
 extern void __raw_readsb(const void __iomem *addr, void *data, int bytelen);
 extern void __raw_readsw(const void __iomem *addr, void *data, int wordlen);
@@ -49,11 +53,25 @@ extern void __raw_readsl(const void __iomem *addr, void *data, int longlen);
 #define __raw_writeb(v,a)	(__chk_io_ptr(a), *(volatile unsigned char __force  *)(a) = (v))
 #define __raw_writew(v,a)	(__chk_io_ptr(a), *(volatile unsigned short __force *)(a) = (v))
 #define __raw_writel(v,a)	(__chk_io_ptr(a), *(volatile unsigned int __force   *)(a) = (v))
-
 #define __raw_readb(a)		(__chk_io_ptr(a), *(volatile unsigned char __force  *)(a))
 #define __raw_readw(a)		(__chk_io_ptr(a), *(volatile unsigned short __force *)(a))
 #define __raw_readl(a)		(__chk_io_ptr(a), *(volatile unsigned int __force   *)(a))
 
+extern void outb(unsigned char  v, u32 p);
+extern void outw(unsigned short v, u32 p);
+extern void outl(unsigned long  v, u32 p);
+
+extern unsigned char   inb(u32 p);
+extern unsigned short  inw(u32 p);
+extern unsigned long   inl(u32 p);
+
+extern void outsb(u32 p, unsigned char  * from, u32 len);
+extern void outsw(u32 p, unsigned short * from, u32 len);
+extern void outsl(u32 p, unsigned long  * from, u32 len);
+
+extern void insb(u32 p, unsigned char  * to, u32 len);
+extern void insw(u32 p, unsigned short * to, u32 len);
+extern void insl(u32 p, unsigned long  * to, u32 len);
 /*
  * Architecture ioremap implementation.
  *
@@ -107,27 +125,6 @@ extern void __readwrite_bug(const char *fn);
  *
  * The {in,out}[bwl] macros are for emulating x86-style PCI/ISA IO space.
  */
-#ifdef __io
-#define outb(v,p)		__raw_writeb(v,__io(p))
-#define outw(v,p)		__raw_writew((__force __u16) \
-					cpu_to_le16(v),__io(p))
-#define outl(v,p)		__raw_writel((__force __u32) \
-					cpu_to_le32(v),__io(p))
-
-#define inb(p)	({ __u8 __v = __raw_readb(__io(p)); __v; })
-#define inw(p)	({ __u16 __v = le16_to_cpu((__force __le16) \
-			__raw_readw(__io(p))); __v; })
-#define inl(p)	({ __u32 __v = le32_to_cpu((__force __le32) \
-			__raw_readl(__io(p))); __v; })
-
-#define outsb(p,d,l)		__raw_writesb(__io(p),d,l)
-#define outsw(p,d,l)		__raw_writesw(__io(p),d,l)
-#define outsl(p,d,l)		__raw_writesl(__io(p),d,l)
-
-#define insb(p,d,l)		__raw_readsb(__io(p),d,l)
-#define insw(p,d,l)		__raw_readsw(__io(p),d,l)
-#define insl(p,d,l)		__raw_readsl(__io(p),d,l)
-#endif
 
 #define outb_p(val,port)	outb((val),(port))
 #define outw_p(val,port)	outw((val),(port))
@@ -192,23 +189,6 @@ extern void _memset_io(volatile void __iomem *, int, size_t);
 
 #define eth_io_copy_and_sum(s,c,l,b) \
 				eth_copy_and_sum((s),__mem_pci(c),(l),(b))
-
-static inline int
-check_signature(void __iomem *io_addr, const unsigned char *signature,
-		int length)
-{
-	int retval = 0;
-	do {
-		if (readb(io_addr) != *signature)
-			goto out;
-		io_addr++;
-		signature++;
-		length--;
-	} while (length);
-	retval = 1;
-out:
-	return retval;
-}
 
 #elif !defined(readb)
 

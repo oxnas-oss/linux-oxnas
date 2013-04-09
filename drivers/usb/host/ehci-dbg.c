@@ -240,6 +240,10 @@ dbg_command_buf (char *buf, unsigned len, const char *label, u32 command)
 		);
 }
 
+#define PORT_SPD_HIGH    (2 << 26)
+#define PORT_SPD_FULL    (1 << 26)
+
+
 static int
 dbg_port_buf (char *buf, unsigned len, const char *label, int port, u32 status)
 {
@@ -254,7 +258,7 @@ dbg_port_buf (char *buf, unsigned len, const char *label, int port, u32 status)
 	}
 
 	return scnprintf (buf, len,
-		"%s%sport %d status %06x%s%s sig=%s%s%s%s%s%s%s%s%s%s",
+		"%s%sport %d status %06x%s%s sig=%s %s%s%s%s%s%s%s%s%s %s",
 		label, label [0] ? " " : "", port, status,
 		(status & PORT_POWER) ? " POWER" : "",
 		(status & PORT_OWNER) ? " OWNER" : "",
@@ -267,7 +271,8 @@ dbg_port_buf (char *buf, unsigned len, const char *label, int port, u32 status)
 		(status & PORT_PEC) ? " PEC" : "",
 		(status & PORT_PE) ? " PE" : "",
 		(status & PORT_CSC) ? " CSC" : "",
-		(status & PORT_CONNECT) ? " CONNECT" : ""
+		(status & PORT_CONNECT) ? " CONNECT" : "",
+		(status & PORT_SPD_HIGH) ? ((status & PORT_SPD_FULL) ? "??" : "HIGH" ) : (status & PORT_SPD_FULL) ? "LOW" : "FULL"
 	    );
 }
 

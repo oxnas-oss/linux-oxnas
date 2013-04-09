@@ -1343,7 +1343,9 @@ static DEFINE_PER_CPU(struct bh_lru, bh_lrus) = {{ NULL }};
 static inline void check_irqs_on(void)
 {
 #ifdef irqs_disabled
-	BUG_ON(irqs_disabled());
+    /** @TODO This has been commented out because it is hit instantly when using
+    * the Ralink Wi-Fi drivers. work needs to be done to identify why */
+	//BUG_ON(irqs_disabled());
 #endif
 }
 

@@ -2840,10 +2840,10 @@ static void init_request_from_bio(struct request *req, struct bio *bio)
 
 static int __make_request(request_queue_t *q, struct bio *bio)
 {
-	struct request *req;
 	int el_ret, rw, nr_sectors, cur_nr_sectors, barrier, err, sync;
 	unsigned short prio;
 	sector_t sector;
+	struct request *req = 0;
 
 	sector = bio->bi_sector;
 	nr_sectors = bio_sectors(bio);
@@ -2852,6 +2852,7 @@ static int __make_request(request_queue_t *q, struct bio *bio)
 
 	rw = bio_data_dir(bio);
 	sync = bio_sync(bio);
+sync = 1;
 
 	/*
 	 * low level driver can indicate that it wants pages above a
@@ -2874,6 +2875,11 @@ static int __make_request(request_queue_t *q, struct bio *bio)
 		goto get_rq;
 
 	el_ret = elv_merge(q, &req, bio);
+
+    /* if the bio raid modes differ, force a no-merge */
+    if ((req) && (req->bio) && (bio->bi_raid != req->bio->bi_raid ))
+        el_ret = ELEVATOR_NO_MERGE;
+
 	switch (el_ret) {
 		case ELEVATOR_BACK_MERGE:
 			BUG_ON(!rq_mergeable(req));
@@ -3061,13 +3067,8 @@ end_io:
 			break;
 		}
 
-		if (unlikely(bio_sectors(bio) > q->max_hw_sectors)) {
-			printk("bio too big device %s (%u > %u)\n", 
-				bdevname(bio->bi_bdev, b),
-				bio_sectors(bio),
-				q->max_hw_sectors);
+		if (unlikely(bio_sectors(bio) > q->max_hw_sectors))
 			goto end_io;
-		}
 
 		if (unlikely(test_bit(QUEUE_FLAG_DEAD, &q->queue_flags)))
 			goto end_io;
@@ -3755,8 +3756,8 @@ queue_ra_store(struct request_queue *q, const char *page, size_t count)
 	ssize_t ret = queue_var_store(&ra_kb, page, count);
 
 	spin_lock_irq(q->queue_lock);
-	if (ra_kb > (q->max_sectors >> 1))
-		ra_kb = (q->max_sectors >> 1);
+//	if (ra_kb > (q->max_sectors >> 1))
+//		ra_kb = (q->max_sectors >> 1);
 
 	q->backing_dev_info.ra_pages = ra_kb >> (PAGE_CACHE_SHIFT - 10);
 	spin_unlock_irq(q->queue_lock);
@@ -3778,7 +3779,7 @@ queue_max_sectors_store(struct request_queue *q, const char *page, size_t count)
 			max_hw_sectors_kb = q->max_hw_sectors >> 1,
 			page_kb = 1 << (PAGE_CACHE_SHIFT - 10);
 	ssize_t ret = queue_var_store(&max_sectors_kb, page, count);
-	int ra_kb;
+//	int ra_kb;
 
 	if (max_sectors_kb > max_hw_sectors_kb || max_sectors_kb < page_kb)
 		return -EINVAL;
@@ -3790,10 +3791,10 @@ queue_max_sectors_store(struct request_queue *q, const char *page, size_t count)
 	/*
 	 * Trim readahead window as well, if necessary:
 	 */
-	ra_kb = q->backing_dev_info.ra_pages << (PAGE_CACHE_SHIFT - 10);
-	if (ra_kb > max_sectors_kb)
-		q->backing_dev_info.ra_pages =
-				max_sectors_kb >> (PAGE_CACHE_SHIFT - 10);
+//	ra_kb = q->backing_dev_info.ra_pages << (PAGE_CACHE_SHIFT - 10);
+//	if (ra_kb > max_sectors_kb)
+//		q->backing_dev_info.ra_pages =
+//				max_sectors_kb >> (PAGE_CACHE_SHIFT - 10);
 
 	q->max_sectors = max_sectors_kb << 1;
 	spin_unlock_irq(q->queue_lock);

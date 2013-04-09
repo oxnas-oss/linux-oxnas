@@ -1918,6 +1918,12 @@ config E1000_DISABLE_PACKET_SPLIT
 
 	  If in doubt, say N.
 
+config VELOCITYGET
+        tristate "Latest VIA Velocity"
+        depends on PCI
+        help
+          Via Velocity driver from VIA Arena site
+
 source "drivers/net/ixp2000/Kconfig"
 
 config MYRI_SBUS
@@ -2218,6 +2224,14 @@ config MV643XX_ETH_2
 	help
 	  This enables support for Port 2 of the Marvell MV643XX Gigabit
 	  Ethernet.
+
+config SYNOPSYS_GMAC
+	bool "Synopsys Gigabit MAC"
+	select CRC32
+	select MII
+	depends on ARCH_OXNAS
+	help
+		Driver for the Synopsys Gigabit MAC
 
 endmenu
 

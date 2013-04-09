@@ -9,7 +9,7 @@
  *
  * Better read-balancing code written by Mika Kuoppala <miku@iki.fi>, 2000
  *
- * Fixes to reconstruction by Jakob Østergaard" <jakob@ostenfeld.dk>
+ * Fixes to reconstruction by Jakob ï¿½tergaard" <jakob@ostenfeld.dk>
  * Various fixes by Neil Brown <neilb@cse.unsw.edu.au>
  *
  * Changes by Peter T. Breuer <ptb@it.uc3m.es> 31/1/2003 to support
@@ -34,6 +34,7 @@
 #include "dm-bio-list.h"
 #include <linux/raid/raid1.h>
 #include <linux/raid/bitmap.h>
+#include <asm/arch/sata.h>
 
 #define DEBUG 0
 #if DEBUG
@@ -65,6 +66,72 @@ static void * r1bio_pool_alloc(gfp_t gfp_flags, void *data)
 		unplug_slaves(pi->mddev);
 
 	return r1_bio;
+}
+
+/**
+ * Assesses if the current raid configuration is suitable for implementation
+ * by the raid HW, if so, will enable it
+ */
+static void raid1_hw_raidable(mddev_t *mddev)
+{
+    conf_t *conf = mddev_to_conf(mddev);
+
+    /*default to SW RAID */
+    conf->hw_raid1_settings = 0;
+
+    /** @debug Foce to software RAID only until problems with 48-bit RAID-1 are
+    understood */
+    return;
+
+#ifdef CONFIG_SCSI_OX800SATA
+    /* if this drive is suitable for HW raid then enable it */
+    if (mddev->raid_disks != 2) {
+        printk(KERN_DEBUG"raid1 not hw raidable %d disks (needs to be 2)\n",mddev->raid_disks);
+        return;
+    }
+
+    /* Paranoid? */
+    if (!conf->mirrors[0].rdev ||
+        !conf->mirrors[1].rdev ||
+        !conf->mirrors[0].rdev->bdev ||
+        !conf->mirrors[1].rdev->bdev ||
+        !conf->mirrors[0].rdev->bdev->bd_part ||
+        !conf->mirrors[1].rdev->bdev->bd_part ) {
+        printk(KERN_DEBUG"raid1 not hw raidable, mirrors not ready\n");
+        return;
+	}
+
+	if (conf->mirrors[0].rdev->bdev->bd_part->start_sect !=
+        conf->mirrors[1].rdev->bdev->bd_part->start_sect) {
+        printk(KERN_DEBUG"raid1 not hw raidable, partition start sectors differ %lu, %lu\n",
+            conf->mirrors[0].rdev->bdev->bd_part->start_sect,
+            conf->mirrors[1].rdev->bdev->bd_part->start_sect);
+        return;
+    }
+
+    if (!conf->mirrors[0].rdev->bdev->bd_disk ||
+		!conf->mirrors[0].rdev->bdev->bd_disk->queue ||
+		(ox800sata_get_port_no(conf->mirrors[0].rdev->bdev->bd_disk->queue) != 0)) {
+        printk(KERN_DEBUG"raid1 not hw raidable, RAID disk 0 not on internal SATA port 0\n");
+        return;
+    }
+
+    if (!conf->mirrors[1].rdev->bdev->bd_disk ||
+		!conf->mirrors[1].rdev->bdev->bd_disk->queue ||
+		(ox800sata_get_port_no(conf->mirrors[1].rdev->bdev->bd_disk->queue) != 1)) {
+        printk(KERN_DEBUG"raid1 not hw raidable, RAID disk 1 not on internal SATA port 1\n");
+        return;
+    }
+
+	/* cannot mix 28 and 48-bit LBA devices */
+	if (!ox800sata_LBA_schemes_compatible()) {
+        printk(KERN_DEBUG"raid0 not hw raidable, disks need to use same LBA size (28 vs 48)\n");
+		return;
+	}
+
+    conf->hw_raid1_settings = OX800SATA_RAID1;
+    printk(KERN_DEBUG"raid1 using hardware RAID 0x%08x\n",conf->hw_raid1_settings);
+#endif /*CONFIG_SCSI_OX800SATA*/
 }
 
 static void r1bio_pool_free(void *r1_bio, void *data)
@@ -327,9 +394,27 @@ static int raid1_end_write_request(struct bio *bio, unsigned int bytes_done, int
 		r1_bio->bios[mirror] = NULL;
 		to_put = bio;
 		if (!uptodate) {
-			md_error(r1_bio->mddev, conf->mirrors[mirror].rdev);
-			/* an I/O failed, we can't clear the bitmap */
-			set_bit(R1BIO_Degraded, &r1_bio->state);
+#ifdef CONFIG_SCSI_OX800SATA
+            if ((mirror == 0) && (bio->bi_raid)) {
+                /* command was sent to part 0 for both drives, need to find
+                * which drive caused the error */
+                int device = ox800sata_RAID_faults();
+
+                /* it's unlikely, but both disks could fail at once, that sort of
+                thing can really ruin yeour day.*/
+                if (device & 1) md_error(r1_bio->mddev, conf->mirrors[0].rdev);
+                if (device & 2) md_error(r1_bio->mddev, conf->mirrors[1].rdev);
+
+                /* an I/O failed, we can't clear the bitmap */
+                set_bit(R1BIO_Degraded, &r1_bio->state);
+            } else {
+#endif // CONFIG_SCSI_OX800SATA
+                md_error(r1_bio->mddev, conf->mirrors[mirror].rdev);
+                /* an I/O failed, we can't clear the bitmap */
+                set_bit(R1BIO_Degraded, &r1_bio->state);
+#ifdef CONFIG_SCSI_OX800SATA
+            }
+#endif // CONFIG_SCSI_OX800SATA
 		} else
 			/*
 			 * Set R1BIO_Uptodate in our master bio, so that
@@ -832,78 +917,126 @@ static int make_request(request_queue_t *q, struct bio * bio)
 	}
 #endif
 	rcu_read_lock();
-	for (i = 0;  i < disks; i++) {
-		if ((rdev=rcu_dereference(conf->mirrors[i].rdev)) != NULL &&
-		    !test_bit(Faulty, &rdev->flags)) {
-			atomic_inc(&rdev->nr_pending);
-			if (test_bit(Faulty, &rdev->flags)) {
-				rdev_dec_pending(rdev, mddev);
-				r1_bio->bios[i] = NULL;
-			} else
-				r1_bio->bios[i] = bio;
-			targets++;
-		} else
-			r1_bio->bios[i] = NULL;
-	}
-	rcu_read_unlock();
 
-	BUG_ON(targets == 0); /* we never fail the last device */
+    /* start of oxsemi hw raid code */
+    if ((conf->mirrors[0].rdev) &&
+        !test_bit(Faulty, &conf->mirrors[0].rdev->flags) &&
+        (conf->mirrors[1].rdev) &&
+        !test_bit(Faulty, &conf->mirrors[1].rdev->flags) &&
+        (conf->hw_raid1_settings) )
+    {
+        struct bio *mbio;
 
-	if (targets < conf->raid_disks) {
-		/* array is degraded, we will not clear the bitmap
-		 * on I/O completion (see raid1_end_write_request) */
-		set_bit(R1BIO_Degraded, &r1_bio->state);
-	}
+        rdev = conf->mirrors[0].rdev;
+        atomic_inc(&rdev->nr_pending);
+        r1_bio->bios[0] = bio;
+        targets++;
 
-	/* do behind I/O ? */
-	if (bitmap &&
-	    atomic_read(&bitmap->behind_writes) < bitmap->max_write_behind &&
-	    (behind_pages = alloc_behind_pages(bio)) != NULL)
-		set_bit(R1BIO_BehindIO, &r1_bio->state);
+        rcu_read_unlock();
 
-	atomic_set(&r1_bio->remaining, 0);
-	atomic_set(&r1_bio->behind_remaining, 0);
+        /* do behind I/O ? */
+        if (bitmap &&
+            atomic_read(&bitmap->behind_writes) < bitmap->max_write_behind &&
+            (behind_pages = alloc_behind_pages(bio)) != NULL)
+            set_bit(R1BIO_BehindIO, &r1_bio->state);
 
-	do_barriers = bio_barrier(bio);
-	if (do_barriers)
-		set_bit(R1BIO_Barrier, &r1_bio->state);
+        atomic_set(&r1_bio->remaining, 0);
+        atomic_set(&r1_bio->behind_remaining, 0);
 
-	bio_list_init(&bl);
-	for (i = 0; i < disks; i++) {
-		struct bio *mbio;
-		if (!r1_bio->bios[i])
-			continue;
+        do_barriers = bio_barrier(bio);
+        if (do_barriers)
+            set_bit(R1BIO_Barrier, &r1_bio->state);
 
-		mbio = bio_clone(bio, GFP_NOIO);
-		r1_bio->bios[i] = mbio;
+        bio_list_init(&bl);
 
-		mbio->bi_sector	= r1_bio->sector + conf->mirrors[i].rdev->data_offset;
-		mbio->bi_bdev = conf->mirrors[i].rdev->bdev;
-		mbio->bi_end_io	= raid1_end_write_request;
-		mbio->bi_rw = WRITE | do_barriers;
-		mbio->bi_private = r1_bio;
+        mbio = bio_clone(bio, GFP_NOIO);
+        r1_bio->bios[0] = mbio;
 
-		if (behind_pages) {
-			struct bio_vec *bvec;
-			int j;
+        mbio->bi_sector	= r1_bio->sector + conf->mirrors[0].rdev->data_offset;
+        mbio->bi_bdev = conf->mirrors[0].rdev->bdev;
+        mbio->bi_end_io	= raid1_end_write_request;
+        mbio->bi_rw = WRITE | do_barriers;
+        mbio->bi_private = r1_bio;
+        mbio->bi_raid = conf->hw_raid1_settings ;
 
-			/* Yes, I really want the '__' version so that
-			 * we clear any unused pointer in the io_vec, rather
-			 * than leave them unchanged.  This is important
-			 * because when we come to free the pages, we won't
-			 * know the originial bi_idx, so we just free
-			 * them all
-			 */
-			__bio_for_each_segment(bvec, mbio, j, 0)
-				bvec->bv_page = behind_pages[j];
-			if (test_bit(WriteMostly, &conf->mirrors[i].rdev->flags))
-				atomic_inc(&r1_bio->behind_remaining);
-		}
+        atomic_inc(&r1_bio->remaining);
 
-		atomic_inc(&r1_bio->remaining);
+        bio_list_add(&bl, mbio);
+    } else {
+        for (i = 0;  i < disks; i++) {
+            if ((rdev=rcu_dereference(conf->mirrors[i].rdev)) != NULL &&
+                !test_bit(Faulty, &rdev->flags)) {
+                atomic_inc(&rdev->nr_pending);
+                if (test_bit(Faulty, &rdev->flags)) {
+                    rdev_dec_pending(rdev, mddev);
+                    r1_bio->bios[i] = NULL;
+                } else
+                    r1_bio->bios[i] = bio;
+                targets++;
+            } else
+                r1_bio->bios[i] = NULL;
+        }
+        rcu_read_unlock();
 
-		bio_list_add(&bl, mbio);
-	}
+        BUG_ON(targets == 0); /* we never fail the last device */
+
+        if (targets < conf->raid_disks) {
+            /* array is degraded, we will not clear the bitmap
+             * on I/O completion (see raid1_end_write_request) */
+            set_bit(R1BIO_Degraded, &r1_bio->state);
+        }
+
+        /* do behind I/O ? */
+        if (bitmap &&
+            atomic_read(&bitmap->behind_writes) < bitmap->max_write_behind &&
+            (behind_pages = alloc_behind_pages(bio)) != NULL)
+            set_bit(R1BIO_BehindIO, &r1_bio->state);
+
+        atomic_set(&r1_bio->remaining, 0);
+        atomic_set(&r1_bio->behind_remaining, 0);
+
+        do_barriers = bio_barrier(bio);
+        if (do_barriers)
+            set_bit(R1BIO_Barrier, &r1_bio->state);
+
+        bio_list_init(&bl);
+        for (i = 0; i < disks; i++) {
+            struct bio *mbio;
+            if (!r1_bio->bios[i])
+                continue;
+
+            mbio = bio_clone(bio, GFP_NOIO);
+            r1_bio->bios[i] = mbio;
+
+            mbio->bi_sector	= r1_bio->sector + conf->mirrors[i].rdev->data_offset;
+            mbio->bi_bdev = conf->mirrors[i].rdev->bdev;
+            mbio->bi_end_io	= raid1_end_write_request;
+            mbio->bi_rw = WRITE | do_barriers;
+            mbio->bi_private = r1_bio;
+
+            if (behind_pages) {
+                struct bio_vec *bvec;
+                int j;
+
+                /* Yes, I really want the '__' version so that
+                 * we clear any unused pointer in the io_vec, rather
+                 * than leave them unchanged.  This is important
+                 * because when we come to free the pages, we won't
+                 * know the originial bi_idx, so we just free
+                 * them all
+                 */
+                __bio_for_each_segment(bvec, mbio, j, 0)
+                    bvec->bv_page = behind_pages[j];
+                if (test_bit(WriteMostly, &conf->mirrors[i].rdev->flags))
+                    atomic_inc(&r1_bio->behind_remaining);
+            }
+
+            atomic_inc(&r1_bio->remaining);
+
+            bio_list_add(&bl, mbio);
+        }
+    }
+
 	kfree(behind_pages); /* the behind pages are attached to the bios now */
 
 	bitmap_startwrite(bitmap, bio->bi_sector, r1_bio->sectors,
@@ -1025,6 +1158,8 @@ static int raid1_spare_active(mddev_t *mddev)
 		}
 	}
 
+    raid1_hw_raidable(mddev);
+
 	print_conf(conf);
 	return 0;
 }
@@ -1062,6 +1197,8 @@ static int raid1_add_disk(mddev_t *mddev, mdk_rdev_t *rdev)
 			break;
 		}
 
+    raid1_hw_raidable(mddev);
+
 	print_conf(conf);
 	return found;
 }
@@ -1090,6 +1227,8 @@ static int raid1_remove_disk(mddev_t *mddev, int number)
 		}
 	}
 abort:
+
+    raid1_hw_raidable(mddev);
 
 	print_conf(conf);
 	return err;
@@ -1486,14 +1625,16 @@ static void raid1d(mddev_t *mddev)
 							d = conf->raid_disks;
 						d--;
 						rdev = conf->mirrors[d].rdev;
-						if (rdev &&
-						    test_bit(In_sync, &rdev->flags)) {
-							if (sync_page_io(rdev->bdev,
-									 sect + rdev->data_offset,
-									 s<<9, conf->tmppage, WRITE) == 0)
-								/* Well, this device is dead */
-								md_error(mddev, rdev);
-						}
+						if (rdev) {
+                            atomic_add(s, &rdev->corrected_errors);
+						    if (test_bit(In_sync, &rdev->flags)) {
+                                if (sync_page_io(rdev->bdev,
+                                         sect + rdev->data_offset,
+                                         s<<9, conf->tmppage, WRITE) == 0)
+                                    /* Well, this device is dead */
+                                    md_error(mddev, rdev);
+                            }
+                        }
 					}
 					d = start;
 					while (d != r1_bio->read_disk) {
@@ -1803,6 +1944,8 @@ static int run(mddev_t *mddev)
 	mdk_rdev_t *rdev;
 	struct list_head *tmp;
 
+    printk("raid1 run\n");
+
 	if (mddev->level != 1) {
 		printk("raid1: %s: raid level not set to mirroring (%d)\n",
 		       mdname(mddev), mddev->level);
@@ -1924,6 +2067,8 @@ static int run(mddev_t *mddev)
 	 */
 	mddev->array_size = mddev->size;
 
+    raid1_hw_raidable(mddev);
+
 	mddev->queue->unplug_fn = raid1_unplug;
 	mddev->queue->issue_flush_fn = raid1_issue_flush;
 
@@ -1992,6 +2137,9 @@ static int raid1_resize(mddev_t *mddev, sector_t sectors)
 	}
 	mddev->size = mddev->array_size;
 	mddev->resync_max_sectors = sectors;
+
+    raid1_hw_raidable(mddev);
+
 	return 0;
 }
 
@@ -2077,6 +2225,7 @@ static int raid1_reshape(mddev_t *mddev)
 	mddev->delta_disks = 0;
 
 	conf->last_used = 0; /* just make sure it is in-range */
+    raid1_hw_raidable(mddev);
 	lower_barrier(conf);
 
 	set_bit(MD_RECOVERY_NEEDED, &mddev->recovery);
