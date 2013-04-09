@@ -21,6 +21,8 @@
 #include <linux/module.h>
 #include <linux/raid/raid0.h>
 
+#include <linux/thecus_event.h>
+
 #define MAJOR_NR MD_MAJOR
 #define MD_DRIVER
 #define MD_PERSONALITY
@@ -360,6 +362,7 @@ static int raid0_run (mddev_t *mddev)
 
 
 	blk_queue_merge_bvec(mddev->queue, raid0_mergeable_bvec);
+	check_raid_status(mddev,RAID_STATUS_HEALTHY);
 	return 0;
 
 out_free_conf:

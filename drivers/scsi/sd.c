@@ -62,6 +62,8 @@
 
 #include "scsi_logging.h"
 
+#include <linux/thecus_event.h>
+
 MODULE_AUTHOR("Eric Youngdale");
 MODULE_DESCRIPTION("SCSI disk (sd) driver");
 MODULE_LICENSE("GPL");
@@ -85,6 +87,29 @@ MODULE_ALIAS_BLOCKDEV_MAJOR(SCSI_DISK15_MAJOR);
 MODULE_ALIAS_SCSI_DEVICE(TYPE_DISK);
 MODULE_ALIAS_SCSI_DEVICE(TYPE_MOD);
 MODULE_ALIAS_SCSI_DEVICE(TYPE_RBC);
+
+static u32 thecus_align = 1;	// thecus align flag, default is align with 128M
+/* Parse kernel cmdline options */
+static int __init do_thecus_align_setup(char *str)
+{
+	thecus_align = simple_strtoul(str, NULL, 10);
+	if (thecus_align == 0)	printk("Thecus 128M align disabled\n");
+
+        return 0;
+}
+__setup("thecus_align=",do_thecus_align_setup);
+
+#if 0
+#if defined(CONFIG_SENSORS_N3200PLUS_IO) || defined(CONFIG_SENSORS_N3200PLUS_IO_MODULE)
+static u32 thecus_max_tray = 3;
+#elif defined(CONFIG_SENSORS_N0503_IO) || defined(CONFIG_SENSORS_N0503_IO_MODULE)
+static u32 thecus_max_tray = 5;
+#else
+#error "Please Select CONFIG_SENSORS_N3200PLUS_IO or CONFIG_SENSORS_N0503_IO"
+#endif
+#endif
+
+static u32 thecus_max_tray = CONFIG_THECUS_MAX_TRAY;
 
 static int  sd_revalidate_disk(struct gendisk *);
 static int  sd_probe(struct device *);
@@ -1150,6 +1175,7 @@ sd_read_capacity(struct scsi_disk *sdkp, unsigned char *buffer)
 	struct scsi_sense_hdr sshdr;
 	int sense_valid = 0;
 	struct scsi_device *sdp = sdkp->device;
+	int thecus_128M_align = 19; // 262144, default sector size 512
 
 repeat:
 	retries = 3;
@@ -1310,15 +1336,34 @@ got_data:
 			  hard_sector, (unsigned long long)mb);
 	}
 
+	sd_printk(KERN_NOTICE, sdkp,
+		"THECUS  real size: sdp->tray_id: %d, dkp->capacity: %llu, sector_size: %d\n",
+		sdp->tray_id, (unsigned long long)sdkp->capacity, sector_size);
 	/* Rescale capacity to 512-byte units */
-	if (sector_size == 4096)
+	if (sector_size == 4096) {
 		sdkp->capacity <<= 3;
-	else if (sector_size == 2048)
+		thecus_128M_align = 16; // 32768
+	} else if (sector_size == 2048) {
 		sdkp->capacity <<= 2;
-	else if (sector_size == 1024)
+		thecus_128M_align = 17; // 65536
+	} else if (sector_size == 1024) {
 		sdkp->capacity <<= 1;
-	else if (sector_size == 256)
+		thecus_128M_align = 18; // 131072
+	} else if (sector_size == 256) {
 		sdkp->capacity >>= 1;
+		thecus_128M_align = 20; // 524288
+	}
+
+	if(thecus_align) {
+		if(sdp->tray_id <= thecus_max_tray ) {
+			// align with 128M(134217728)
+			sdkp->capacity >>= thecus_128M_align;
+			sdkp->capacity <<= thecus_128M_align;
+			sd_printk(KERN_NOTICE, sdkp,
+				"THECUS align 128M: sdp->tray_id: %d, dkp->capacity: %llu, sector_size: %d\n",
+				sdp->tray_id, (unsigned long long)sdkp->capacity, sector_size);
+		}
+	}
 
 	sdkp->device->sector_size = sector_size;
 }
@@ -1598,6 +1643,7 @@ static int sd_probe(struct device *dev)
 	struct gendisk *gd;
 	u32 index;
 	int error;
+	u32 max_host_no=0;
 
 	error = -ENODEV;
 	if (sdp->type != TYPE_DISK && sdp->type != TYPE_MOD && sdp->type != TYPE_RBC)
@@ -1650,6 +1696,12 @@ static int sd_probe(struct device *dev)
 
 	get_device(&sdp->sdev_gendev);
 
+	max_host_no = 2;
+	if(sdp->host->host_no >= max_host_no)   // usb disk
+		index = (index + 6) % 6 + 5;
+	else
+		index = sdp->host->host_no + sdp->channel;
+
 	gd->major = sd_major((index & 0xf0) >> 4);
 	gd->first_minor = ((index & 0xf) << 4) | (index & 0xfff00);
 	gd->minors = 16;
@@ -1668,6 +1720,29 @@ static int sd_probe(struct device *dev)
 			'a' + m1, 'a' + m2, 'a' + m3);
 	}
 
+	printk("Thecus Tray: %d, %s\n",index + 1, gd->disk_name);
+
+	if ((sdp->host->host_no >= max_host_no) && (sdp->lun > 5))
+		goto out_free;
+
+	if(sdp->host->host_no > max_host_no) {
+		struct Scsi_Host *shost;
+		struct scsi_device *sdev;
+		int    hostno = sdp->host->host_no;
+
+		while (--hostno >= max_host_no)
+			if ((shost = scsi_host_lookup(hostno)) != 0xfffffffa) {
+				shost_for_each_device(sdev, shost) {
+					if (strcmp(gd->disk_name, sdev->dev_name) == 0) {
+						idr_remove(&sd_index_idr, sdkp->index);
+						goto out_free;
+					}
+				}
+			}
+	}
+	strcpy(sdp->dev_name, gd->disk_name);
+	sdp->tray_id = index + 1;
+
 	gd->private_data = &sdkp->driver;
 	gd->queue = sdkp->device->request_queue;
 
@@ -1685,6 +1760,13 @@ static int sd_probe(struct device *dev)
 
 	sd_printk(KERN_NOTICE, sdkp, "Attached SCSI %sdisk\n",
 		  sdp->removable ? "removable " : "");
+
+	{
+		char strevent[20];
+		sprintf(strevent,"%s %d",sdp->dev_name,sdp->tray_id);
+		printk("DISK_ADD %s %d\n",sdp->dev_name,sdp->tray_id);
+		criticalevent_user(DISK_ADD,strevent);
+	}
 
 	return 0;
 
@@ -1714,6 +1796,13 @@ static int sd_remove(struct device *dev)
 	class_device_del(&sdkp->cdev);
 	del_gendisk(sdkp->disk);
 	sd_shutdown(dev);
+
+	{
+		char strevent[20];
+//		printk("DISK_REMOVE %s %d",sdkp->device->dev_name,sdkp->device->tray_id);
+		sprintf(strevent,"%s %d",sdkp->device->dev_name,sdkp->device->tray_id);
+		criticalevent_user(DISK_REMOVE,strevent);
+	}
 
 	mutex_lock(&sd_ref_mutex);
 	dev_set_drvdata(dev, NULL);

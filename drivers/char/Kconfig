@@ -4,6 +4,13 @@
 
 menu "Character devices"
 
+config EVENT_THECUS
+	bool "Thecus Event from proc "
+	---help---
+	  Say Y here to support thecus event in proc entry.
+	  About the show event function ,will be show event
+	  by /proc/thecus_eventc.
+
 config VT
 	bool "Virtual terminal" if EMBEDDED
 	depends on !S390

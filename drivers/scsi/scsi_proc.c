@@ -186,6 +186,25 @@ static int proc_print_scsidevice(struct device *dev, void *data)
 	else
 		seq_printf(s, "\n");
 
+	// add by citizen, work around for gd31244 and sil3512
+	seq_printf(s, "  Thecus: Tray:%d Disk:%s ",sdev->tray_id, sdev->dev_name);
+
+	seq_printf(s, "Model:");
+	for (i = 0; i < 16; i++) {
+		if (sdev->model[i] >= 0x20)
+			seq_printf(s, "%c", sdev->model[i]);
+		else
+			seq_printf(s, " ");
+	}
+	seq_printf(s, " Rev:");
+	for (i = 0; i < 4; i++) {
+		if (sdev->rev[i] >= 0x20)
+			seq_printf(s, "%c", sdev->rev[i]);
+		else
+			seq_printf(s, " ");
+	}
+	seq_printf(s, "\n");
+
 	return 0;
 }
 

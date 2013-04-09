@@ -117,6 +117,12 @@ config MTD_PNC2000
 	  PNC-2000 is the name of Network Camera product from PHOTRON
 	  Ltd. in Japan. It uses CFI-compliant flash.
 
+config MTD_N2510
+	tristate "CFI Flash device map on Thecus N2510 board support"
+	depends on ARCH_OXNAS && OXNAS_VERSION_0X810 && MTD_CFI && MTD_PARTITIONS
+	help
+	  Thecus N2510 board uses CFI compliant flash.
+
 config MTD_SC520CDP
 	tristate "CFI Flash device mapped on AMD SC520 CDP"
 	depends on X86 && MTD_CFI && MTD_CONCAT

@@ -22,6 +22,8 @@
 #include <linux/raid/raid10.h>
 #include <linux/raid/bitmap.h>
 
+#include <linux/thecus_event.h>
+
 /*
  * RAID10 provides a combination of RAID0 and RAID1 functionality.
  * The layout of data is defined by
@@ -958,6 +960,8 @@ static void error(mddev_t *mddev, mdk_rdev_t *rdev)
 	printk(KERN_ALERT "raid10: Disk failure on %s, disabling device. \n"
 		"	Operation continuing on %d devices\n",
 		bdevname(rdev->bdev,b), conf->raid_disks - mddev->degraded);
+
+	criticalevent_user(RAID_DISK_FAIL,bdevname(rdev->bdev,b));
 }
 
 static void print_conf(conf_t *conf)

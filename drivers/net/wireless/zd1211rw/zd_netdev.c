@@ -233,6 +233,7 @@ struct net_device *zd_netdev_alloc(struct usb_interface *intf)
 		return NULL;
 	}
 
+	strcpy(netdev->name, "wth%d");
 	SET_NETDEV_DEV(netdev, &intf->dev);
 
 	dev_dbg_f(&intf->dev, "netdev->flags %#06hx\n", netdev->flags);

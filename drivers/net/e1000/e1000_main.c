@@ -844,6 +844,33 @@ e1000_reset(struct e1000_adapter *adapter)
 	e1000_release_manageability(adapter);
 }
 
+/* Ethernet MAC adr to assign to interface */
+static int mac_adr[] = { 0x00, 0x50, 0x8d, 0x30, 0xff, 0xb3 };
+/* Parse netdev kernel cmdline options */
+static int __init do_mac_addr_setup(char *str)
+{
+	int i;
+	char *s, *options;
+
+	s = str;
+	i = 0;
+	while((options = strchr(s, ':')) != NULL) {
+		*(options++) = 0;
+		if (i < sizeof(mac_adr)/sizeof(int)) {
+			mac_adr[i] = simple_strtoul(s, NULL, 16);
+//                      printk("MAC[%d]: %X\n",i,mac_adr[i]);
+		} else break;
+		i++;
+		s=options;
+	}
+
+	mac_adr[5] = simple_strtoul(s, NULL, 16);
+
+	return 0;
+}
+__setup("mac1_addr=",do_mac_addr_setup);
+
+
 /**
  * e1000_probe - Device Initialization Routine
  * @pdev: PCI device information struct
@@ -1008,6 +1035,14 @@ e1000_probe(struct pci_dev *pdev,
 
 	/* make sure the EEPROM is good */
 
+#ifdef CONFIG_THECUS_N2200_IO
+	adapter->hw.mac_addr[0] = (uint8_t) mac_adr[0];
+	adapter->hw.mac_addr[1] = (uint8_t) mac_adr[1];
+	adapter->hw.mac_addr[2] = (uint8_t) mac_adr[2];
+	adapter->hw.mac_addr[3] = (uint8_t) mac_adr[3];
+	adapter->hw.mac_addr[4] = (uint8_t) mac_adr[4];
+	adapter->hw.mac_addr[5] = (uint8_t) mac_adr[5];
+#else
 	if (e1000_validate_eeprom_checksum(&adapter->hw) < 0) {
 		DPRINTK(PROBE, ERR, "The EEPROM Checksum Is Not Valid\n");
 		goto err_eeprom;
@@ -1017,6 +1052,7 @@ e1000_probe(struct pci_dev *pdev,
 
 	if (e1000_read_mac_addr(&adapter->hw))
 		DPRINTK(PROBE, ERR, "EEPROM Read Error\n");
+#endif
 	memcpy(netdev->dev_addr, adapter->hw.mac_addr, netdev->addr_len);
 	memcpy(netdev->perm_addr, adapter->hw.mac_addr, netdev->addr_len);
 

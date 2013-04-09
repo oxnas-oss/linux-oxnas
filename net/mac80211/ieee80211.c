@@ -1117,7 +1117,7 @@ int ieee80211_register_hw(struct ieee80211_hw *hw)
 	ieee80211_install_qdisc(local->mdev);
 
 	/* add one default STA interface */
-	result = ieee80211_if_add(local->mdev, "wlan%d", NULL,
+	result = ieee80211_if_add(local->mdev, "wth%d", NULL,
 				  IEEE80211_IF_TYPE_STA);
 	if (result)
 		printk(KERN_WARNING "%s: Failed to add default virtual iface\n",

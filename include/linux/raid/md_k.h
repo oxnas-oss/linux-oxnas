@@ -205,6 +205,7 @@ struct mddev_s
 	int				degraded;	/* whether md should consider
 							 * adding a spare
 							 */
+	int                             raid_status;    /* MAPPING to thecus_event.h "RAID_STATUS_XXXXXX" */
 	int				barriers_work;	/* initialised to true, cleared as soon
 							 * as a barrier request to slave
 							 * fails.  Only supported

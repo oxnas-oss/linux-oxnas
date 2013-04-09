@@ -617,6 +617,15 @@ void __init reserve_node_zero(pg_data_t *pgdat)
 	reserve_bootmem_node(pgdat, __pa(swapper_pg_dir),
 			     PTRS_PER_PGD * sizeof(pgd_t));
 
+#ifdef CONFIG_OXNAS_MAP_SRAM
+	/*
+	 * Reserve the page table describing the first MB of address space in 4KB
+	 * pages so we can map SRAM over part of it. This didn't work for some reason
+	 * so instead reserve first 0x4000 as some other archs do
+	 */
+	 res_size = __pa(swapper_pg_dir) - PHYS_OFFSET;
+#endif // CONFIG_OXNAS_MAP_SRAM
+
 	/*
 	 * Hmm... This should go elsewhere, but we really really need to
 	 * stop things allocating the low memory; ideally we need a better

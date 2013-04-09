@@ -22,6 +22,8 @@
 #include <linux/slab.h>
 #include <linux/raid/linear.h>
 
+#include <linux/thecus_event.h>
+
 #define MAJOR_NR MD_MAJOR
 #define MD_DRIVER
 #define MD_PERSONALITY
@@ -261,6 +263,9 @@ static int linear_run (mddev_t *mddev)
 	mddev->queue->unplug_fn = linear_unplug;
 	mddev->queue->backing_dev_info.congested_fn = linear_congested;
 	mddev->queue->backing_dev_info.congested_data = mddev;
+
+	check_raid_status(mddev,RAID_STATUS_HEALTHY);
+
 	return 0;
 }
 
