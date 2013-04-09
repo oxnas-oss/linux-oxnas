@@ -140,8 +140,6 @@ typedef struct gmac_priv {
 
     /** The timer for NAPI polling when out of memory when trying to fill RX
      *  descriptor ring */
-    struct timer_list         poll_timer;
-    volatile int              poll_timer_shutdown;
 
     /** PHY related info */
     struct mii_if_info        mii;

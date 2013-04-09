@@ -1,7 +1,7 @@
 /*
  * linux/arch/arm/mach-oxnas/wdc-fan.c
  *
- * Copyright (C) 2006 Western Digital
+ * Copyright (C) 2006-2007 Western Digital
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -246,7 +246,9 @@ int oldSpeed = fan_state.speed;
 
    if (oldSpeed != fan_state.speed)
    {
-      printk(KERN_INFO "WDC Fan speed set %u\n", fan_state.speed);
+#if 0
+      printk(KERN_DEBUG "WDC Fan speed set %u\n", fan_state.speed);
+#endif
    }
 }
 

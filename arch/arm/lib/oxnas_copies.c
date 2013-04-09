@@ -90,8 +90,7 @@ unsigned long oxnas_copy_from_user(void *to, const void __user *from, unsigned l
 
         // Create DMA mappings for all the user pages
         for (i=0; i < pages_mapped; ++i) {
-            gl[i].__address = page_address(gl[i].page) + gl[i].offset;
-            gl[i].dma_address = dma_map_single(0, gl[i].__address, gl[i].length, DMA_TO_DEVICE);
+            gl[i].dma_address = dma_map_single(0, page_address(gl[i].page) + gl[i].offset, gl[i].length, DMA_TO_DEVICE);
         }
 
         // Create a DMA mapping for the kernel memory range

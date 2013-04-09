@@ -201,12 +201,12 @@ config LEON_IMAGE_BASE
 	help
 		The load address for the LEON program
 
-config LEON_IMAGE_SIZE
-	int "The number of 1K blocks of SRAM to reserve for the LEON program"
+config LEON_PAGES
+	int "The number of 4K pages of SRAM to reserve for the LEON program"
 	depends on SUPPORT_LEON
 	default 8
 	help
-		Determines the number of 1K blocks of SRAM that are reserved for the
+		Determines the number of 4K pages of SRAM that are reserved for the
 		LEON program
 
 config LEON_COPRO
@@ -373,6 +373,25 @@ config OXNAS_EARLY_PRINTK
 		If both CONFIG_DEBUG_LL and this option are selected, then each printk
 		call will duplicate the message in a call to printascii to get very
 		early console output
+
+config OXNAS_INSTRUMENT_COPIES
+	bool "Instrument copy_to_user and copy_from_user"
+	default n
+
+config OXNAS_INSTRUMENT_COPIES_THRESHOLD
+	int "The threshold above which copies will be instrumented"
+	depends OXNAS_INSTRUMENT_COPIES
+	default 0
+
+config OXNAS_INSTRUMENT_COPIES_TIME
+	bool "Whether to print copy timing to console"
+	depends OXNAS_INSTRUMENT_COPIES
+	default n
+
+config OXNAS_INSTRUMENT_COPIES_GPIO
+	bool "Whether to toggle a GPIO around copies"
+	depends OXNAS_INSTRUMENT_COPIES
+	default n
 
 config OXNAS_DMA_COPIES
 	bool "Whether to use DMA for larger user-kernel copies"

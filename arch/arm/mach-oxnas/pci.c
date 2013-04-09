@@ -652,27 +652,7 @@ static struct hw_pci oxnas_pci __initdata = {
 
 static int __init oxnas_pci_init(void)
 {
-    u32 reg;
-    /* set the clock frequency by programming the clock divider */
-//    printk(KERN_DEBUG "PCI: clock speed set to %d Hz\n", NOMINAL_PLL400_FREQ / (2*(PCI_CLOCK_DIVIDER + 1)) );
-    reg = readl(SYS_CTRL_CKCTRL_CTRL);
-    reg &= ~SYS_CTRL_CKCTRL_CTRL_PCI_MASK;
-    reg |= (PCI_CLOCK_DIVIDER & SYS_CTRL_CKCTRL_CTRL_PCI_MASK);
-    writel(reg, SYS_CTRL_CKCTRL_CTRL);
-
-    // Enable the clock to the PCI block
-    writel(1UL << SYS_CTRL_CKEN_PCI_BIT, SYS_CTRL_CKEN_SET_CTRL);
-
-    // Ensure the PCI block is properly reset
-    writel(1UL << SYS_CTRL_RSTEN_PCI_BIT, SYS_CTRL_RSTEN_SET_CTRL);
-    writel(1UL << SYS_CTRL_RSTEN_PCI_BIT, SYS_CTRL_RSTEN_CLR_CTRL);
-
-//	printk(KERN_DEBUG "PCI: oxnas_pci_init %d %d %d \n", machine_arch_type, __machine_arch_type, MACH_TYPE_OXNAS );
-	if ( 1 /*machine_is_oxnas()*/ ) {
-//		printk(KERN_DEBUG "PCI: machine_is_oxnas, PCI CSRs 0x%08x\n", PCI_CSRS_BASE );
-		pci_common_init(&oxnas_pci);
-	}
-
+    pci_common_init(&oxnas_pci);
 	return 0;
 }
 

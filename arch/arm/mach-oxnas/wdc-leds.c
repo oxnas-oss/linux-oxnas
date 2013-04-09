@@ -310,11 +310,11 @@ static irqreturn_t wdc_leds_interrupt
 
    /* Perform the next entry of the pulse width modulation frame buffer */
 
-   writel(LED_MASK_GPIO_A & ~(*next_led), GPIO_A_OUTPUT_SET); /* Darken     */
-   writel(LED_MASK_GPIO_A & *next_led,    GPIO_A_OUTPUT_CLEAR);      /* Illuminate */
+   writel(LED_MASK_GPIO_A & ~(*next_led), GPIO_A_OUTPUT_SET);   /* Darken     */
+   writel(LED_MASK_GPIO_A & *next_led,    GPIO_A_OUTPUT_CLEAR); /* Illuminate */
 
-   writel(LED_MASK_GPIO_B & ~(*next_led), GPIO_B_OUTPUT_SET); /* Darken     */
-   writel(LED_MASK_GPIO_B & *next_led,    GPIO_B_OUTPUT_CLEAR);      /* Illuminate */
+   writel(LED_MASK_GPIO_B & ~(*next_led), GPIO_B_OUTPUT_SET);   /* Darken     */
+   writel(LED_MASK_GPIO_B & *next_led,    GPIO_B_OUTPUT_CLEAR); /* Illuminate */
 
    ++next_led;
 
@@ -601,6 +601,8 @@ void wdc_leds_behavior(unsigned long unused)
          break;
 
       case FULLY_ON__POR_HOLD:
+         display_current_fuel_gauge();
+
          if(--count > 0) break;
 
          active_count = 0;
@@ -1020,6 +1022,24 @@ static void wdc_leds_set_fuel_gauge
 
 
 /***************************************************************************/
+/* FUNCTION: wdc_leds_set_fg_bitmap                                        */
+/*                                                                         */
+/* PURPOSE:                                                                */
+/*   Set the fuel gauge to the requested value (treated as a bitmap)       */
+/***************************************************************************/
+static void wdc_leds_set_fg_bitmap
+   (
+      struct led_classdev*  led_cdev,
+      enum led_brightness   value
+   )
+{
+   fuel_gauge_bits = get_inner_ring_bits((u16)value);
+
+   need_to_display_current_fuel_gauge = 1;
+}
+
+
+/***************************************************************************/
 /* FUNCTION: wdc_leds_set_rebuilding                                       */
 /*                                                                         */
 /* PURPOSE:                                                                */
@@ -1134,6 +1154,19 @@ static struct led_classdev wdc_leds_fuel_gauge =
 
 
 /***************************************************************************/
+/* DATA STRUCTURE: wdc_leds_fg_bitmap                                      */
+/*                                                                         */
+/* PURPOSE:                                                                */
+/*   Describe the wdc-leds "fuel-gauge" LEDs (brightness = bitmap)         */
+/***************************************************************************/
+static struct led_classdev wdc_leds_fg_bitmap =
+{
+   .name           = "wdc-leds:fg-bitmap",
+   .brightness_set = wdc_leds_set_fg_bitmap,
+};
+
+
+/***************************************************************************/
 /* DATA STRUCTURE: wdc_leds_rebuilding                                     */
 /*                                                                         */
 /* PURPOSE:                                                                */
@@ -1186,6 +1219,7 @@ static struct led_classdev* wdc_led_classes[] =
    &wdc_leds_ignore_activity,
    &wdc_leds_transition,
    &wdc_leds_fuel_gauge,
+   &wdc_leds_fg_bitmap,
    &wdc_leds_rebuilding,
    &wdc_leds_degraded,
    &wdc_leds_over_temp

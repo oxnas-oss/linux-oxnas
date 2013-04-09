@@ -256,12 +256,13 @@ static void __init oxnas_mapio(void)
                                    (1UL << DDR_ARB_MIDBUF_BIT));
 
     // Setup the DDR client read buffers
+    // NB 0X800 ASIC bug means DMA read buffers should never be enabled
     *(volatile u32*)DDR_AHB_REG = ((1UL << DDR_AHB_NO_RCACHE_ARMD_BIT)  |
                                    /*(1UL << DDR_AHB_NO_RCACHE_ARMI_BIT)  |*/
                                    (1UL << DDR_AHB_NO_RCACHE_COPRO_BIT) |
-                                   /*(1UL << DDR_AHB_NO_RCACHE_DMAA_BIT)  |
+                                   (1UL << DDR_AHB_NO_RCACHE_DMAA_BIT)  |
                                    (1UL << DDR_AHB_NO_RCACHE_DMAB_BIT)  |
-                                   (1UL << DDR_AHB_NO_RCACHE_PCI_BIT)   |
+                                   /* (1UL << DDR_AHB_NO_RCACHE_PCI_BIT)   |
                                    (1UL << DDR_AHB_NO_RCACHE_GMAC_BIT)  |*/
                                    (1UL << DDR_AHB_NO_RCACHE_USB_BIT));
 
@@ -398,6 +399,13 @@ static void __init oxnas_mapio(void)
     *(volatile u32*)SYS_CTRL_RSTEN_SET_CTRL = (1UL << SYS_CTRL_RSTEN_PCI_BIT);
     *(volatile u32*)SYS_CTRL_RSTEN_CLR_CTRL = (1UL << SYS_CTRL_RSTEN_PCI_BIT);
 
+    // Setup the PCI clock divider
+    {
+    static const u32 PCIDIV_MASK = (((1UL << SYS_CTRL_CKCTRL_CTRL_PCIDIV_NUM_BITS) - 1) << SYS_CTRL_CKCTRL_CTRL_PCIDIV_BIT);
+    *(volatile u32*)SYS_CTRL_CKCTRL_CTRL &= ~PCIDIV_MASK;
+    *(volatile u32*)SYS_CTRL_CKCTRL_CTRL |= (PCI_CLOCK_DIVIDER << SYS_CTRL_CKCTRL_CTRL_PCIDIV_BIT);
+    }
+
     // Enable clock to PCI core
     *(volatile u32*)SYS_CTRL_CKEN_SET_CTRL = (1UL << SYS_CTRL_CKEN_PCI_BIT);
 
@@ -454,6 +462,22 @@ static void __init oxnas_mapio(void)
     // Enable GPIO output on SATA 2 power line
     writel(SATA_POWER_2_MASK, SATA_POWER_2_SET_OE_REG);
 #endif // CONFIG_OXNAS_SATA_POWER_2
+
+#ifdef CONFIG_OXNAS_INSTRUMENT_COPIES
+    // Use GPIO 6 (normally PCI Req 6) for copies instrumentation
+    #define INSTRUMENT_COPIES_GPIO_MASK ((1UL << 6) | (1UL << 7))
+
+    // Enable normal GPIO on line
+    writel(readl(SYS_CTRL_GPIO_PRIMSEL_CTRL_0) & ~INSTRUMENT_COPIES_GPIO_MASK, SYS_CTRL_GPIO_PRIMSEL_CTRL_0);
+    writel(readl(SYS_CTRL_GPIO_SECSEL_CTRL_0)  & ~INSTRUMENT_COPIES_GPIO_MASK, SYS_CTRL_GPIO_SECSEL_CTRL_0);
+    writel(readl(SYS_CTRL_GPIO_TERTSEL_CTRL_0) & ~INSTRUMENT_COPIES_GPIO_MASK, SYS_CTRL_GPIO_TERTSEL_CTRL_0);
+
+    // Set line inactive to begin with
+    writel(INSTRUMENT_COPIES_GPIO_MASK, GPIO_A_OUTPUT_CLEAR);
+
+    // Enable line as an output
+    writel(INSTRUMENT_COPIES_GPIO_MASK, GPIO_A_OUTPUT_ENABLE_SET);
+#endif // CONFIG_OXNAS_INSTRUMENT_COPIES
 
 #endif // CONFIG_PCI
 }

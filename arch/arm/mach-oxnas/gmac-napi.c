@@ -63,10 +63,6 @@
 //#define USE_RX_CSUM
 #define USE_RX_NAPI
 
-#ifdef CONFIG_LEON_COPRO
-#undef USE_RX_NAPI
-#endif // CONFIG_LEON_COPRO
-
 //#define TEST_COPRO
 #define COPRO_RX_MITIGATION 0   /* No Rx mitigation in CoPro */
 #define COPRO_RX_MITIGATION_FRAMES 5
@@ -330,6 +326,26 @@ static void gmac_int_en_set(
     gmac_priv_t *priv,
     u32          mask)
 {
+    unsigned long irq_flags;
+
+#ifdef CONFIG_LEON_COPRO
+    spin_lock_irqsave(&priv->cmd_que_lock_, irq_flags);
+    cmd_que_queue_cmd(&priv->cmd_queue_, GMAC_CMD_INT_EN_SET, mask, 0);
+    spin_unlock_irqrestore(&priv->cmd_que_lock_, irq_flags);
+
+    // Interrupt the CoPro so it sees the new command
+    writel(1UL << COPRO_SEM_INT_CMD, SYS_CTRL_SEMA_SET_CTRL);
+#else
+    spin_lock_irqsave(&priv->cmd_que_lock_, irq_flags);
+    dma_reg_set_mask(priv, DMA_INT_ENABLE_REG, mask);
+    spin_unlock_irqrestore(&priv->cmd_que_lock_, irq_flags);
+#endif // CONFIG_LEON_COPRO
+}
+
+static void gmac_int_en_set_isr(
+    gmac_priv_t *priv,
+    u32          mask)
+{
 #ifdef CONFIG_LEON_COPRO
     spin_lock(&priv->cmd_que_lock_);
     cmd_que_queue_cmd(&priv->cmd_queue_, GMAC_CMD_INT_EN_SET, mask, 0);
@@ -338,24 +354,11 @@ static void gmac_int_en_set(
     // Interrupt the CoPro so it sees the new command
     writel(1UL << COPRO_SEM_INT_CMD, SYS_CTRL_SEMA_SET_CTRL);
 #else
-    unsigned long irq_flags;
-
-    spin_lock_irqsave(&priv->cmd_que_lock_, irq_flags);
-    dma_reg_set_mask(priv, DMA_INT_ENABLE_REG, mask);
-    spin_unlock_irqrestore(&priv->cmd_que_lock_, irq_flags);
-#endif
-}
-
-#if !defined(USE_RX_NAPI) && !defined(CONFIG_LEON_COPRO)
-static void gmac_int_en_set_isr(
-    gmac_priv_t *priv,
-    u32          mask)
-{
     spin_lock(&priv->cmd_que_lock_);
     dma_reg_set_mask(priv, DMA_INT_ENABLE_REG, mask);
     spin_unlock(&priv->cmd_que_lock_);
+#endif // CONFIG_LEON_COPRO
 }
-#endif // USE_RX_NAPI
 
 #ifdef CONFIG_LEON_COPRO
 static struct semaphore copro_int_clr_semaphore;
@@ -374,9 +377,11 @@ static void gmac_int_en_clr(
     u32         *new_value)
 {
 #ifdef CONFIG_LEON_COPRO
-    spin_lock(&priv->cmd_que_lock_);
+    unsigned long irq_flags=0;
+
+    spin_lock_irqsave(&priv->cmd_que_lock_, irq_flags);
     cmd_que_queue_cmd(&priv->cmd_queue_, GMAC_CMD_INT_EN_CLR, mask, copro_int_clr_callback);
-    spin_unlock(&priv->cmd_que_lock_);
+    spin_unlock_irqrestore(&priv->cmd_que_lock_, irq_flags);
 
     // Interrupt the CoPro so it sees the new command
     writel(1UL << COPRO_SEM_INT_CMD, SYS_CTRL_SEMA_SET_CTRL);
@@ -614,25 +619,6 @@ static int refill_rx_ring(
 }
 #endif // USE_RX_NAPI
 
-#ifdef USE_RX_NAPI
-#ifndef ENABLE_RX_OFFLOAD
-static void start_poll_timer(gmac_priv_t* priv)
-{
-DBG(1, "$Rstart_poll_timer() Called\n");
-    priv->poll_timer.expires = jiffies + MS_TO_JIFFIES(NAPI_OOM_POLL_INTERVAL_MS);
-    priv->poll_timer_shutdown = 0;
-    add_timer(&priv->poll_timer);
-}
-#endif // !ENABLE_RX_OFFLOAD
-#endif // USE_RX_NAPI
-
-static void delete_poll_timer(gmac_priv_t* priv)
-{
-    // Ensure NAPI out-of-memory poll timer won't be invoked again
-    priv->poll_timer_shutdown = 1;
-    del_timer_sync(&priv->poll_timer);
-}
-
 static void start_watchdog_timer(gmac_priv_t* priv)
 {
     priv->watchdog_timer.expires = jiffies + WATCHDOG_TIMER_INTERVAL;
@@ -651,38 +637,6 @@ static inline int is_auto_negotiation_in_progress(gmac_priv_t* priv)
 {
     return !(phy_read(priv->netdev, priv->phy_addr, MII_BMSR) & BMSR_ANEGCOMPLETE);
 }
-
-#ifdef USE_RX_NAPI
-static void poll_timer_action(unsigned long arg)
-{
-    gmac_priv_t* priv = (gmac_priv_t*)arg;
-    int ring_full;
-    struct net_device* dev = (struct net_device*)arg;
-
-DBG(1, "$Rpoll_timer_action() Entered\n");
-    // Is the RX descriptor ring full?
-    spin_lock_bh(&priv->rx_spinlock_);
-    ring_full = !available_for_write(&priv->rx_gmac_desc_list_info);
-    spin_unlock_bh(&priv->rx_spinlock_);
-    if (!ring_full) {
-        // No, so try to refill it
-DBG(1, KERN_INFO "$Mpoll_timer_action() Rx ring NOT full, calling refill_rx_ring()\n");
-        ring_full = refill_rx_ring(dev, 0, 1);
-    }
-
-    // Is the RX descriptor ring full?
-    if (!ring_full && !priv->poll_timer_shutdown) {
-      // No so we're still out of memory, so restart poll timer
-DBG(1, KERN_INFO "$Mpoll_timer_action() Restarting poll timer\n");
-      priv->poll_timer.expires = jiffies + MS_TO_JIFFIES(NAPI_OOM_POLL_INTERVAL_MS);
-      add_timer(&priv->poll_timer);
-    } else {
-        // Have filled RX descriptor ring, so add back onto NAPI poll list
-DBG(1, KERN_INFO "$Mpoll_timer_action() Add back to polling list\n");
-        netif_rx_schedule(dev);
-    }
-}
-#endif // USE_RX_NAPI
 
 static void watchdog_timer_action(unsigned long arg)
 {
@@ -1045,7 +999,7 @@ DBG(2, KERN_INFO "$Gpoll() %s: quota = %u, budget = %u\n", dev->name, dev->quota
 
         // While there are receive polling jobs to be done
 #ifdef ENABLE_RX_OFFLOAD
-        while (1) {
+        while (rx_work_limit) {
             dma_addr_t dma_address;
             u32 dma_length;
             u32 desc_status;
@@ -1109,7 +1063,7 @@ DBG(1, KERN_INFO "$GQueued job %lu\n", rx_offload_job->number_);
                 queue_work(priv->rx_work_queue_, &priv->rx_offload_work_);
             }
 #else // ENABLE_RX_OFFLOAD
-        while (1) {
+        while (rx_work_limit) {
             dma_addr_t dma_address;
             u32 dma_length;
             u32 desc_status;
@@ -1148,8 +1102,8 @@ DBG(28, KERN_INFO "$Bpoll() %s: Got rx descriptor %d for skb 0x%08x, desc_status
 DBG(2, KERN_INFO "poll() %s: Have skb and desc not empty, so calling refill_rx_ring()\n", dev->name);
                         refill_rx_ring(dev, skb, 1);
                     } else {
-                        // Free the socket buffer, as we couldn't make use
-                        // of it to refill the RX descriptor ring
+                        // Free the socket buffer, as we couldn't make use of it
+                        // to refill the RX descriptor ring
                         DBG(10, "$B[PL F]$n");
                         dev_kfree_skb(skb);
                     }
@@ -1160,26 +1114,21 @@ DBG(2, KERN_INFO "poll() %s: Have skb and desc not empty, so calling refill_rx_r
             // Increment count of processed packets
             ++received;
 
-            // Decrement our remaining quota. Include wrap check as we may have
-            // been round the descriptor loop more than once, due to clearing
-            // the RI status, in which case we may exceed our quota by up to one
-            // less than the total number of RX descriptors. In fact even the
-            // first pass round the loop may process upto the total number of RX
-            // descriptors, which is required as the ISR will have cleared the
-            // RI status before this routine this invoked
+            // Decrement our remaining quota
             if (rx_work_limit > 0) {
                 --rx_work_limit;
             }
         }
 
-        // Only clear RI status if we have quota remaining allowing us to check
-        // for and possibly process more RX descriptors
-        finished = 1;
         if (rx_work_limit) {
-            // Should clear any RI status so we don't immediately get
-            // reinterrupted when we leave polling, due to either a new RI
-            // event, or a left over interrupt from one of the RX descriptors
-            // we've already processed
+            // We have unused quota remaining, but apparently no Rx packets to
+            // process
+            available = 0;
+
+            // Clear any RI status so we don't immediately get reinterrupted
+            // when we leave polling, due to either a new RI event, or a left
+            // over interrupt from one of the RX descriptors we've already
+            // processed
             status = dma_reg_read(priv, DMA_STATUS_REG);
             if (status & (1UL << DMA_STATUS_RI_BIT)) {
                 // Ack the RI, including the normal summary sticky bit
@@ -1187,30 +1136,29 @@ DBG(2, KERN_INFO "poll() %s: Have skb and desc not empty, so calling refill_rx_r
                                                      (1UL << DMA_STATUS_NIS_BIT)));
 
                 // Must check again for available RX descriptors, in case the RI
-                // status came from a new RX descriptor, else we'll lose
-                // knowledge that the descriptor is available, as we've just
-                // cleared its interrupt - THIS IS A BIT DODGY, as we may exceed
-                // our quota, but I'd rather avoid read/modifying the status
-                // register on every pass around the RX descriptor processing
-                // loop above
-                finished = 0;
+                // status came from a new RX descriptor
+                spin_lock(&priv->rx_spinlock_);
+                available = rx_available_for_read(&priv->rx_gmac_desc_list_info, 1);
+                spin_unlock(&priv->rx_spinlock_);
             }
+
+            if (!available) {
+                // We have quota left but no Rx packets to process so stop
+                // polling
+                continue_polling = 0;
+                finished = 1;
+            }
+        } else {
+            spin_lock(&priv->rx_spinlock_);
+            // If still have Rx packets to process we should indicte that we
+            // wish to continue polling once more quota is available to us
+            continue_polling = rx_available_for_read(&priv->rx_gmac_desc_list_info, 1);
+            spin_unlock(&priv->rx_spinlock_);
+
+            // Must leave poll() routine as no quota left
+            finished = 1;
         }
     } while (!finished);
-
-    // Decrement the quota and budget even if we didn't process any packets
-    if (!received) {
-        DBG(1, KERN_WARNING "poll() %s: received = 0\n", dev->name);
-        received = 1;
-    }
-
-    // Update record of packets processed
-    dev->quota -= received;
-    *budget    -= received;
-
-    // Default return status to indicate we've finished, so that the polling
-    // state can be left
-    continue_polling = 0;
 
 #ifndef ENABLE_RX_OFFLOAD
     // Attempt to fill all available slots in the RX descriptor ring
@@ -1224,41 +1172,23 @@ DBG(1, KERN_INFO "poll() %s: Not empty, so calling refill_rx_ring()\n", dev->nam
     }
 #endif // !ENABLE_RX_OFFLOAD
 
-    spin_lock(&priv->rx_spinlock_);
-    available = rx_available_for_read(&priv->rx_gmac_desc_list_info, 1);
-    spin_unlock(&priv->rx_spinlock_);
+    // Decrement the quota and budget even if we didn't process any packets
+    if (!received) {
+        DBG(1, KERN_WARNING "poll() %s: received = 0\n", dev->name);
+        received = 1;
+    }
 
-    if (available) {
-        // Not done, we want to keep polling, but we've exceeded our quota
-DBG(1, KERN_INFO "poll() %s: Exceeded quota, so ask to keep polling\n", dev->name);
-        continue_polling = 1;
-    } else {
-#ifndef ENABLE_RX_OFFLOAD
-        // Have processed all outstanding RX packets - are there any descriptors
-        // waiting to be associated with a receive buffer?
-        spin_lock(&priv->rx_spinlock_);
-        available = available_for_write(&priv->rx_gmac_desc_list_info);
-        spin_unlock(&priv->rx_spinlock_);
-        if (available) {
-DBG(3, KERN_INFO "poll() %s: OOM, starting poll timer\n", dev->name);
-            // RX descriptor ring is not full, so we are out of memory. Start
-            // timer, stop polling, but do not re-enable interrupts caused by
-            // received packets. The refill polling timer will take care of
-            // adding us back to the poll list once it has refilled the RX
-            // descriptor ring
-            start_poll_timer(priv);
-        } else {
-#endif // !ENABLE_RX_OFFLOAD
+    // Update record of quota consumed
+    dev->quota -= received;
+    *budget    -= received;
+
+    if (!continue_polling) {
 DBG(1, KERN_INFO "$Wpoll() %s: No outstanding packets and ring full, reenabling intrs\n", dev->name);
-            // No more received packets and RX descriptor ring is full, so
-            // return to interrupt mode
+            // No more received packets to process so return to interrupt mode
             netif_rx_complete(dev);
 
             // Enable interrupts caused by received packets
             gmac_int_en_set(priv, (1UL << DMA_INT_ENABLE_RI_BIT));
-#ifndef ENABLE_RX_OFFLOAD
-        }
-#endif // ENABLE_RX_OFFLOAD
     }
 
 DBG(1, KERN_INFO "$Gpoll() %s: Leaving with continue_polling = %d\n", dev->name, continue_polling);
@@ -1753,7 +1683,16 @@ static void copro_fwd_intrs_handler(
 
     // Test for normal receive interrupt
     if (status & (1UL << DMA_STATUS_RI_BIT)) {
+#ifdef USE_RX_NAPI
+        if (netif_rx_schedule_prep(dev)) {
+            // Tell system we have work to be done
+            __netif_rx_schedule(dev);
+        } else {
+            printk(KERN_ERR "copro_fwd_intrs_handler() %s: RX interrupt while in poll\n", dev->name);
+        }
+#else
         receive(priv, was_rx_performed);
+#endif // USE_RX_NAPI
     }
 
     // Test for unavailable RX buffers
@@ -2100,13 +2039,6 @@ DBG(1, "$Wint_handler() %s: Disabing intr with mask = 0x%08x\n", dev->name, int_
         }
 
         // Get status of enabled interrupt sources.
-        // It's conceivable that the gmac_int_en_clr() operation above when
-        // using the CoPro may not yet have applied the interrupt enable mask
-        // change (as we don't wait for completion, as this would require a busy
-        // wait in the ISR). In this case the above line could cause us to leave
-        // the ISR with unmasked interrupts still pending, however as long as
-        // this is a rare occurance we should not see a measureable performance
-        // penalty
         status = raw_status & int_enable;
 DBG(1, KERN_INFO "int_handler() %s: raw_status = 0x%08x, status = 0x%08x, int_enable = 0x%08x\n", dev->name, raw_status, status, int_enable);
     }
@@ -2114,8 +2046,7 @@ DBG(1, KERN_INFO "int_handler() %s: raw_status = 0x%08x, status = 0x%08x, int_en
 #ifndef USE_RX_NAPI
     // If we processed any Rx packets and thus freed up Rx descriptors
     if (rx_was_performed) {
-        // Enable interrupts caused by receive underruns, in case these have
-        // been disabled at the CoPro
+        // Enable interrupts caused by receive underruns
         gmac_int_en_set_isr(priv, (1UL << DMA_INT_ENABLE_RU_BIT));
     }
 #endif // USE_RX_NAPI
@@ -2225,7 +2156,6 @@ DBG(1, KERN_INFO "gmac_down() %s\n", dev->name);
     }
 
     // Stop all timers
-    delete_poll_timer(priv);
     delete_watchdog_timer(priv);
 
 #ifdef ENABLE_RX_OFFLOAD
@@ -2957,7 +2887,7 @@ static irqreturn_t copro_sema_intr(int irq, void *dev_id, struct pt_regs *regs)
     if (rx_was_performed) {
         // Enable interrupts caused by receive underruns, in case these have
         // been disabled at the CoPro
-        gmac_int_en_set(priv, (1UL << DMA_INT_ENABLE_RU_BIT));
+        gmac_int_en_set_isr(priv, (1UL << DMA_INT_ENABLE_RU_BIT));
     }
 
     return IRQ_HANDLED;
@@ -4882,13 +4812,6 @@ static int probe(
     INIT_LIST_HEAD(&priv->copro_tx_skb_list_);
     priv->copro_tx_skb_list_count_ = 0;
 #endif // CONFIG_LEON_COPRO
-
-#ifdef USE_RX_NAPI
-    // Initialise the NAPI out-of-memory polling timer
-    init_timer(&priv->poll_timer);
-    priv->poll_timer.function = poll_timer_action;
-    priv->poll_timer.data = (unsigned long)priv;
-#endif // USE_RX_NAPI
 
     init_timer(&priv->watchdog_timer);
     priv->watchdog_timer.function = &watchdog_timer_action;
