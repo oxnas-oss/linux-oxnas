@@ -18,7 +18,7 @@
 #include <linux/mutex.h>
 
 struct kset block_subsys;
-static DEFINE_MUTEX(block_subsys_lock);
+DEFINE_MUTEX(block_subsys_lock);
 
 /*
  * Can be deleted altogether. Later.

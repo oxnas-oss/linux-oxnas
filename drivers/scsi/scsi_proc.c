@@ -32,7 +32,9 @@
 #include <scsi/scsi_device.h>
 #include <scsi/scsi_host.h>
 #include <scsi/scsi_transport.h>
-
+#include <scsi/sd.h>
+#include <linux/cdrom.h>
+#include "sr.h"
 #include "scsi_priv.h"
 #include "scsi_logging.h"
 
@@ -315,9 +317,84 @@ static const struct file_operations proc_scsi_operations = {
 	.release	= single_release,
 };
 
+static int proc_print_scsidevice_zyxel(struct device *dev, void *data)
+{
+	struct scsi_device *sdev = to_scsi_device(dev);
+	struct scsi_disk *sdkp = dev_get_drvdata(dev);
+	struct scsi_cd *cd = dev_get_drvdata(dev);
+	struct seq_file *s = data;
+	int fakesg;
+	int i;
+
+	///dev/sg0  0 0 0 0  0  /dev/sda  ATA       ST3160812AS       3.AA
+	fakesg=(sdev->host->host_no)+(sdev->channel)+(sdev->id)+(sdev->lun);
+	if ( (sdkp)&&(sdkp->disk)&&(sdkp->disk->disk_name)&&(!strncmp(sdkp->disk->disk_name, "sd", 2)) ) {
+		seq_printf(s,
+			"/dev/sg%d  %d %d %d %d  %d  /dev/%s  ", fakesg,
+			sdev->host->host_no, sdev->channel, sdev->id, sdev->lun,
+			fakesg, sdkp->disk->disk_name);
+	} else if ( (cd)&&(cd->disk)&&(cd->disk->disk_name)&&(!strncmp(cd->disk->disk_name, "sr", 2)) ) {
+		seq_printf(s,
+			"/dev/sg%d  %d %d %d %d  %d  /dev/%s  ", fakesg,
+			sdev->host->host_no, sdev->channel, sdev->id, sdev->lun,
+			fakesg, cd->disk->disk_name);
+	} else {
+		printk(KERN_ERR "%s:%d %d %d %d /dev/???",
+			__FUNCTION__, sdev->host->host_no, sdev->channel, sdev->id, sdev->lun);
+		return 0;
+	}
+	for (i = 0; i < 8; i++) {
+		if (sdev->vendor[i] >= 0x20)
+			seq_printf(s, "%c", sdev->vendor[i]);
+		else
+			seq_printf(s, " ");
+	}
+
+	seq_printf(s, "  ");
+	for (i = 0; i < 16; i++) {
+		if (sdev->model[i] >= 0x20)
+			seq_printf(s, "%c", sdev->model[i]);
+		else
+			seq_printf(s, " ");
+	}
+
+	seq_printf(s, "  ");
+	for (i = 0; i < 4; i++) {
+		if (sdev->rev[i] >= 0x20)
+			seq_printf(s, "%c", sdev->rev[i]);
+		else
+			seq_printf(s, " ");
+	}
+	seq_printf(s, "\n");
+
+	return 0;
+}
+static int proc_scsi_show_zyxel(struct seq_file *s, void *p)
+{
+	bus_for_each_dev(&scsi_bus_type, NULL, s, proc_print_scsidevice_zyxel);
+	return 0;
+}
+
+static int proc_scsi_open_zyxel(struct inode *inode, struct file *file)
+{
+	/*
+	 * We don't really needs this for the write case but it doesn't
+	 * harm either.
+	 */
+	return single_open(file, proc_scsi_show_zyxel, NULL);
+}
+static const struct file_operations proc_scsi_operations_zyxel = {
+	.open		= proc_scsi_open_zyxel,
+	.read		= seq_read,
+	.write		= proc_scsi_write,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
+
 int __init scsi_init_procfs(void)
 {
 	struct proc_dir_entry *pde;
+	struct proc_dir_entry *pde_zyxel;
 
 	proc_scsi = proc_mkdir("scsi", NULL);
 	if (!proc_scsi)
@@ -327,6 +404,10 @@ int __init scsi_init_procfs(void)
 	if (!pde)
 		goto err2;
 	pde->proc_fops = &proc_scsi_operations;
+	pde_zyxel = create_proc_entry("scsi/scsi_zyxel", 0, NULL);
+	if (!pde_zyxel)
+		goto err2;
+	pde_zyxel->proc_fops = &proc_scsi_operations_zyxel;
 
 	return 0;
 
@@ -339,5 +420,6 @@ err1:
 void scsi_exit_procfs(void)
 {
 	remove_proc_entry("scsi/scsi", NULL);
+	remove_proc_entry("scsi/scsi_zyxel", NULL);
 	remove_proc_entry("scsi", NULL);
 }

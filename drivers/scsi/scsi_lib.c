@@ -30,7 +30,6 @@
 #include "scsi_priv.h"
 #include "scsi_logging.h"
 
-
 #define SG_MEMPOOL_NR		ARRAY_SIZE(scsi_sg_pools)
 #define SG_MEMPOOL_SIZE		2
 
@@ -63,6 +62,39 @@ static struct scsi_host_sg_pool scsi_sg_pools[] = {
 #endif
 };
 #undef SP
+
+// LED , shall be same with sysapps/LED_CTRL/led.h
+enum {
+        LED0,   // HD
+        LED1,   // COPY
+        LED2,   // ESATA
+        LED3,   // USB
+        LED4,   // SYS
+};
+
+//RED, GREEN, ORANGE and NO_COLOR shall be same in arch/arm/mach-oxnas/gpio_ctrl/gpio_ctrl.c
+#define RED             (1<<0)
+#define GREEN           (2<<0)
+#define ORANGE          (RED | GREEN)
+#define NO_COLOR        0
+
+//turn_on_led and turn_off_led are in arch/arm/mach-oxnas/gpio_ctrl/gpio_ctrl.c
+extern void turn_on_led(unsigned long led_num, unsigned long led_color);
+extern void turn_off_led(unsigned long led_num);
+
+//Indicate the status of badblock, in drivers/ata/libata-core.c
+extern atomic_t sata_badblock_idf;
+extern atomic_t esata_badblock_idf;
+
+//Indicate the color of LED, in drivers/scsi/scsi.c
+#define LED_DEFAULT		-1
+extern atomic_t hdled_color;
+
+//Control the blinking speed for usb
+#define USB_BLINKING_SET	5
+#define USB_BLINKING_RESET	USB_BLINKING_SET*1000
+atomic_t usb_blinking_times = ATOMIC_INIT(0);
+atomic_t usb_badblock_idf = ATOMIC_INIT(0);
 
 static void scsi_run_queue(struct request_queue *q);
 
@@ -147,7 +179,7 @@ int scsi_queue_insert(struct scsi_cmnd *cmd, int reason)
 	 *
 	 * NOTE: there is magic here about the way the queue is plugged if
 	 * we have no outstanding commands.
-	 * 
+	 *
 	 * Although we *don't* plug the queue, we call the request
 	 * function.  The SCSI request function detects the blocked condition
 	 * and plugs the queue appropriately.
@@ -219,7 +251,7 @@ int scsi_execute_req(struct scsi_device *sdev, const unsigned char *cmd,
 {
 	char *sense = NULL;
 	int result;
-	
+
 	if (sshdr) {
 		sense = kzalloc(SCSI_SENSE_BUFFERSIZE, GFP_NOIO);
 		if (!sense)
@@ -498,7 +530,7 @@ static void scsi_single_lun_run(struct scsi_device *current_sdev)
 		spin_unlock_irqrestore(shost->host_lock, flags);
 		blk_run_queue(sdev->request_queue);
 		spin_lock_irqsave(shost->host_lock, flags);
-	
+
 		scsi_device_put(sdev);
 	}
  out:
@@ -641,7 +673,7 @@ void scsi_run_host_queues(struct Scsi_Host *shost)
  *
  * Notes:       This is called for block device requests in order to
  *              mark some number of sectors as complete.
- * 
+ *
  *		We are guaranteeing that the request queue will be goosed
  *		at some point during this call.
  * Notes:	If cmd was requeued, upon return it will be a stale pointer.
@@ -940,6 +972,41 @@ void scsi_io_completion(struct scsi_cmnd *cmd, unsigned int good_bytes)
 	struct scsi_sense_hdr sshdr;
 	int sense_valid = 0;
 	int sense_deferred = 0;
+	int isSATA = -1;
+	int ledColor = atomic_read(&hdled_color);
+
+	//Blink LED During Volume Creation for internal volume
+	if(ledColor == LED_DEFAULT) {
+		ledColor = GREEN;
+	}
+
+	//Turn on LED
+	if(strcmp(cmd->device->sdev_gendev.bus_id, "0:0:0:0") == 0) {
+		//SATA
+		if(atomic_read(&sata_badblock_idf) == 0) {
+			turn_on_led(LED0, ledColor);
+			isSATA = 1;
+		}
+	}
+	else if(strcmp(cmd->device->sdev_gendev.bus_id, "1:0:0:0") == 0) {
+		//eSATA
+		if(atomic_read(&esata_badblock_idf) == 0) {
+			turn_on_led(LED2, GREEN);
+			isSATA = 2;
+		}
+	}
+	else {
+		//USB
+		if(atomic_read(&usb_blinking_times) % USB_BLINKING_SET == 0 && atomic_read(&usb_badblock_idf) == 0) {
+			turn_on_led(LED3, GREEN);
+		}
+		//Update usb_blinking_times
+		if(atomic_read(&usb_blinking_times) >= USB_BLINKING_RESET) {
+			atomic_set(&usb_blinking_times, 0);
+		}
+		atomic_inc(&usb_blinking_times);
+		isSATA = 3;
+	}
 
 	scsi_release_buffers(cmd);
 
@@ -984,8 +1051,26 @@ void scsi_io_completion(struct scsi_cmnd *cmd, unsigned int good_bytes)
 	 * are leftovers and there is some kind of error
 	 * (result != 0), retry the rest.
 	 */
-	if (scsi_end_request(cmd, 1, good_bytes, result == 0) == NULL)
+	if (scsi_end_request(cmd, 1, good_bytes, result == 0) == NULL) {
+		if(result != 0) {
+			//Turn off LED, control the be havior of LED for hot-plug
+			switch(isSATA) {
+				case 1:
+					turn_off_led(LED0);
+					turn_on_led(LED0, RED);
+					break;
+				case 2:
+					turn_off_led(LED2);
+					break;
+				case 3:
+					break;
+				default:
+					break;
+			}
+		}
+
 		return;
+	}
 
 	/* good_bytes = 0, or (inclusive) there were leftovers and
 	 * result = 0, so scsi_end_request couldn't retry.
@@ -1084,6 +1169,29 @@ void scsi_io_completion(struct scsi_cmnd *cmd, unsigned int good_bytes)
 	}
 	if (result) {
 		if (!(req->cmd_flags & REQ_QUIET)) {
+			//Turn on LED (RED, I/O Error)
+			switch(isSATA) {
+				case 1:
+					atomic_set(&sata_badblock_idf, 1); //set it as badblock
+					turn_off_led(LED0);
+					turn_on_led(LED0, RED);
+					break;
+				case 2:
+					atomic_set(&esata_badblock_idf, 1); //set it as badblock
+					turn_off_led(LED2);
+					turn_on_led(LED2, RED);
+					break;
+				case 3:
+					if(atomic_read(&usb_badblock_idf) == 0) {
+						atomic_set(&usb_badblock_idf, 1); //set it as badblock
+						turn_off_led(LED3);
+						turn_on_led(LED3, RED);
+					}
+					break;
+				default:
+					break;
+			}
+
 			scsi_print_result(cmd);
 			if (driver_byte(result) & DRIVER_SENSE)
 				scsi_print_sense("", cmd);
@@ -1108,6 +1216,26 @@ static int scsi_init_io(struct scsi_cmnd *cmd)
 	struct request     *req = cmd->request;
 	int		   count;
 
+	//Turn off LED
+	if(strcmp(cmd->device->sdev_gendev.bus_id, "0:0:0:0") == 0) {
+		//SATA
+		if(atomic_read(&sata_badblock_idf) == 0) {
+			turn_off_led(LED0);
+		}
+	}
+	else if(strcmp(cmd->device->sdev_gendev.bus_id, "1:0:0:0") == 0) {
+		//eSATA
+		if(atomic_read(&esata_badblock_idf) == 0) {
+			turn_off_led(LED2);
+		}
+	}
+	else {
+		//USB
+		if(atomic_read(&usb_blinking_times) % USB_BLINKING_SET == 0 && atomic_read(&usb_badblock_idf) == 0) {
+			turn_off_led(LED3);
+		}
+	}
+
 	/*
 	 * We used to not use scatter-gather for single segment request,
 	 * but now we do (it makes highmem I/O easier to support without
@@ -1130,7 +1258,7 @@ static int scsi_init_io(struct scsi_cmnd *cmd)
 	else
 		cmd->request_bufflen = req->nr_sectors << 9;
 
-	/* 
+	/*
 	 * Next, walk the list, and fill in the addresses and sizes of
 	 * each segment.
 	 */
@@ -1214,7 +1342,7 @@ int scsi_setup_blk_pc_cmnd(struct scsi_device *sdev, struct request *req)
 		cmd->sc_data_direction = DMA_TO_DEVICE;
 	else
 		cmd->sc_data_direction = DMA_FROM_DEVICE;
-	
+
 	cmd->transfersize = req->data_len;
 	cmd->allowed = req->retries;
 	cmd->timeout_per_command = req->timeout;
@@ -1463,7 +1591,7 @@ static void scsi_softirq_done(struct request *rq)
 			    wait_for/HZ);
 		disposition = SUCCESS;
 	}
-			
+
 	scsi_log_completion(cmd, disposition);
 
 	switch (disposition) {
@@ -1520,7 +1648,7 @@ static void scsi_request_fn(struct request_queue *q)
 		int rtn;
 		/*
 		 * get next queueable request.  We do this early to make sure
-		 * that the request is fully prepared even if we cannot 
+		 * that the request is fully prepared even if we cannot
 		 * accept it.
 		 */
 		req = elv_next_request(q);
@@ -1583,7 +1711,7 @@ static void scsi_request_fn(struct request_queue *q)
 		spin_lock_irq(q->queue_lock);
 		if(rtn) {
 			/* we're refusing the command; because of
-			 * the way locks get dropped, we need to 
+			 * the way locks get dropped, we need to
 			 * check here if plugging is required */
 			if(sdev->device_busy == 0)
 				blk_plug_device(q);
@@ -1856,7 +1984,7 @@ scsi_mode_select(struct scsi_device *sdev, int pf, int sp, int modepage,
 		real_buffer[1] = data->medium_type;
 		real_buffer[2] = data->device_specific;
 		real_buffer[3] = data->block_descriptor_length;
-		
+
 
 		cmd[0] = MODE_SELECT;
 		cmd[4] = len;
@@ -1870,7 +1998,7 @@ scsi_mode_select(struct scsi_device *sdev, int pf, int sp, int modepage,
 EXPORT_SYMBOL_GPL(scsi_mode_select);
 
 /**
- *	scsi_mode_sense - issue a mode sense, falling back from 10 to 
+ *	scsi_mode_sense - issue a mode sense, falling back from 10 to
  *		six bytes if necessary.
  *	@sdev:	SCSI device to be queried
  *	@dbd:	set if mode sense will allow block descriptors to be returned
@@ -1941,7 +2069,7 @@ scsi_mode_sense(struct scsi_device *sdev, int dbd, int modepage,
 		if (scsi_sense_valid(sshdr)) {
 			if ((sshdr->sense_key == ILLEGAL_REQUEST) &&
 			    (sshdr->asc == 0x20) && (sshdr->ascq == 0)) {
-				/* 
+				/*
 				 * Invalid command operation code
 				 */
 				sdev->use_10_for_ms = 0;
@@ -1988,7 +2116,7 @@ scsi_test_unit_ready(struct scsi_device *sdev, int timeout, int retries)
 	};
 	struct scsi_sense_hdr sshdr;
 	int result;
-	
+
 	result = scsi_execute_req(sdev, cmd, DMA_NONE, NULL, 0, &sshdr,
 				  timeout, retries);
 
@@ -2011,7 +2139,7 @@ EXPORT_SYMBOL(scsi_test_unit_ready);
  *	@sdev:	scsi device to change the state of.
  *	@state:	state to change to.
  *
- *	Returns zero if unsuccessful or an error if the requested 
+ *	Returns zero if unsuccessful or an error if the requested
  *	transition is illegal.
  **/
 int
@@ -2028,7 +2156,7 @@ scsi_device_set_state(struct scsi_device *sdev, enum scsi_device_state state)
 		 * created.  This is the manually initialised start
 		 * state */
 		goto illegal;
-			
+
 	case SDEV_RUNNING:
 		switch (oldstate) {
 		case SDEV_CREATED:
@@ -2103,7 +2231,7 @@ scsi_device_set_state(struct scsi_device *sdev, enum scsi_device_state state)
 	return 0;
 
  illegal:
-	SCSI_LOG_ERROR_RECOVERY(1, 
+	SCSI_LOG_ERROR_RECOVERY(1,
 				sdev_printk(KERN_ERR, sdev,
 					    "Illegal state transition %s->%s\n",
 					    scsi_device_state_name(oldstate),
@@ -2257,7 +2385,7 @@ EXPORT_SYMBOL_GPL(sdev_evt_send_simple);
  *	(which must be a legal transition).  When the device is in this
  *	state, only special requests will be accepted, all others will
  *	be deferred.  Since special requests may also be requeued requests,
- *	a successful return doesn't guarantee the device will be 
+ *	a successful return doesn't guarantee the device will be
  *	totally quiescent.
  *
  *	Must be called with user context, may sleep.
@@ -2335,7 +2463,7 @@ EXPORT_SYMBOL(scsi_target_resume);
  *
  * Returns zero if successful or error if not
  *
- * Notes:       
+ * Notes:
  *	This routine transitions the device to the SDEV_BLOCK state
  *	(which must be a legal transition).  When the device is in this
  *	state, all commands are deferred until the scsi lld reenables
@@ -2353,10 +2481,10 @@ scsi_internal_device_block(struct scsi_device *sdev)
 	if (err)
 		return err;
 
-	/* 
+	/*
 	 * The device has transitioned to SDEV_BLOCK.  Stop the
 	 * block layer from calling the midlayer with this device's
-	 * request queue. 
+	 * request queue.
 	 */
 	spin_lock_irqsave(q->queue_lock, flags);
 	blk_stop_queue(q);
@@ -2365,7 +2493,7 @@ scsi_internal_device_block(struct scsi_device *sdev)
 	return 0;
 }
 EXPORT_SYMBOL_GPL(scsi_internal_device_block);
- 
+
 /**
  * scsi_internal_device_unblock - resume a device after a block request
  * @sdev:	device to resume
@@ -2376,22 +2504,22 @@ EXPORT_SYMBOL_GPL(scsi_internal_device_block);
  *
  * Returns zero if successful or error if not.
  *
- * Notes:       
+ * Notes:
  *	This routine transitions the device to the SDEV_RUNNING state
  *	(which must be a legal transition) allowing the midlayer to
- *	goose the queue for this device.  This routine assumes the 
+ *	goose the queue for this device.  This routine assumes the
  *	host_lock is held upon entry.
  **/
 int
 scsi_internal_device_unblock(struct scsi_device *sdev)
 {
-	struct request_queue *q = sdev->request_queue; 
+	struct request_queue *q = sdev->request_queue;
 	int err;
 	unsigned long flags;
-	
-	/* 
+
+	/*
 	 * Try to transition the scsi device to SDEV_RUNNING
-	 * and goose the device queue if successful.  
+	 * and goose the device queue if successful.
 	 */
 	err = scsi_device_set_state(sdev, SDEV_RUNNING);
 	if (err)

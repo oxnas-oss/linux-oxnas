@@ -72,7 +72,7 @@ static void __local_bh_disable(unsigned long ip)
 {
 	unsigned long flags;
 
-	WARN_ON_ONCE(in_irq());
+	//WARN_ON_ONCE(in_irq());
 
 	raw_local_irq_save(flags);
 	add_preempt_count(SOFTIRQ_OFFSET);
@@ -134,9 +134,9 @@ void local_bh_enable(void)
 #ifdef CONFIG_TRACE_IRQFLAGS
 	unsigned long flags;
 
-	WARN_ON_ONCE(in_irq());
+	//WARN_ON_ONCE(in_irq());
 #endif
-	WARN_ON_ONCE(irqs_disabled());
+	//WARN_ON_ONCE(irqs_disabled());
 
 #ifdef CONFIG_TRACE_IRQFLAGS
 	local_irq_save(flags);
@@ -485,6 +485,8 @@ void __init softirq_init(void)
 
 static int ksoftirqd(void * __bind_cpu)
 {
+
+	set_user_nice(current, 15);		/*2009.6.22 GeorgeKang  WORKAROUND to avoid heavy loading in ksoftirqd */
 	set_current_state(TASK_INTERRUPTIBLE);
 
 	while (!kthread_should_stop()) {

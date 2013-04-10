@@ -4,7 +4,8 @@
 # Build U-Boot image when `mkimage' tool is available.
 #
 
-MKIMAGE=$(type -path "${CROSS_COMPILE}mkimage")
+#MKIMAGE=$(type -path "${CROSS_COMPILE}mkimage")
+MKIMAGE=/opt/montavista/pro/bin/mkimage
 
 if [ -z "${MKIMAGE}" ]; then
 	MKIMAGE=$(type -path mkimage)

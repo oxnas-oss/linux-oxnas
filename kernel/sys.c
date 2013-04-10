@@ -42,6 +42,8 @@
 #include <asm/uaccess.h>
 #include <asm/io.h>
 #include <asm/unistd.h>
+//include header for gpio registers
+#include <asm/hardware.h>
 
 #ifndef SET_UNALIGN_CTL
 # define SET_UNALIGN_CTL(a,b)	(-EINVAL)
@@ -67,6 +69,7 @@
 #ifndef SET_ENDIAN
 # define SET_ENDIAN(a,b)	(-EINVAL)
 #endif
+
 
 /*
  * this is where the system-wide overflow UID and GID are defined, for
@@ -399,12 +402,18 @@ asmlinkage long sys_reboot(int magic1, int magic2, unsigned int cmd, void __user
 
 	case LINUX_REBOOT_CMD_HALT:
 		kernel_halt();
+
+		writel(0x1UL << 23 , GPIO_A_OUTPUT_SET);
+
 		unlock_kernel();
 		do_exit(0);
 		break;
 
 	case LINUX_REBOOT_CMD_POWER_OFF:
 		kernel_power_off();
+
+		writel(0x1UL << 23 , GPIO_A_OUTPUT_SET);
+
 		unlock_kernel();
 		do_exit(0);
 		break;

@@ -63,9 +63,19 @@
 #include <scsi/scsi_eh.h>
 #include <scsi/scsi_host.h>
 #include <scsi/scsi_tcq.h>
+#include <linux/proc_fs.h>
 
 #include "scsi_priv.h"
 #include "scsi_logging.h"
+
+//RED, GREEN, ORANGE and NO_COLOR shall be same in arch/arm/mach-oxnas/gpio_ctrl/gpio_ctrl.c
+#define RED             (1<<0)
+#define GREEN           (2<<0)
+#define ORANGE          (RED | GREEN)
+#define NO_COLOR        0
+
+#define LED_DEFAULT		-1
+atomic_t hdled_color = ATOMIC_INIT(LED_DEFAULT);
 
 static void scsi_done(struct scsi_cmnd *cmd);
 
@@ -305,7 +315,7 @@ int scsi_setup_command_freelist(struct Scsi_Host *shost)
 			GFP_KERNEL | shost->cmd_pool->gfp_mask);
 	if (!cmd)
 		goto fail2;
-	list_add(&cmd->list, &shost->free_list);		
+	list_add(&cmd->list, &shost->free_list);
 	return 0;
 
  fail2:
@@ -419,7 +429,7 @@ void scsi_log_completion(struct scsi_cmnd *cmd, int disposition)
 				printk("FAILED\n");
 				break;
 			case TIMEOUT_ERROR:
-				/* 
+				/*
 				 * If called via scsi_times_out.
 				 */
 				printk("TIMEOUT\n");
@@ -441,14 +451,14 @@ void scsi_log_completion(struct scsi_cmnd *cmd, int disposition)
 }
 #endif
 
-/* 
+/*
  * Assign a serial number to the request for error recovery
  * and debugging purposes.  Protected by the Host_Lock of host.
  */
 static inline void scsi_cmd_get_serial(struct Scsi_Host *host, struct scsi_cmnd *cmd)
 {
 	cmd->serial_number = host->cmd_serial_number++;
-	if (cmd->serial_number == 0) 
+	if (cmd->serial_number == 0)
 		cmd->serial_number = host->cmd_serial_number++;
 }
 
@@ -482,10 +492,10 @@ int scsi_dispatch_cmd(struct scsi_cmnd *cmd)
 
 	/* Check to see if the scsi lld put this device into state SDEV_BLOCK. */
 	if (unlikely(cmd->device->sdev_state == SDEV_BLOCK)) {
-		/* 
+		/*
 		 * in SDEV_BLOCK, the command is just put back on the device
 		 * queue.  The suspend state has already blocked the queue so
-		 * future requests should not occur until the device 
+		 * future requests should not occur until the device
 		 * transitions out of the suspend state.
 		 */
 		scsi_queue_insert(cmd, SCSI_MLQUEUE_DEVICE_BUSY);
@@ -499,7 +509,7 @@ int scsi_dispatch_cmd(struct scsi_cmnd *cmd)
 		goto out;
 	}
 
-	/* 
+	/*
 	 * If SCSI-2 or lower, store the LUN value in cmnd.
 	 */
 	if (cmd->device->scsi_level <= SCSI_2 &&
@@ -530,7 +540,7 @@ int scsi_dispatch_cmd(struct scsi_cmnd *cmd)
 		host->resetting = 0;
 	}
 
-	/* 
+	/*
 	 * AK: unlikely race here: for some reason the timer could
 	 * expire before the serial number is set up below.
 	 */
@@ -558,7 +568,7 @@ int scsi_dispatch_cmd(struct scsi_cmnd *cmd)
 	}
 
 	spin_lock_irqsave(host->host_lock, flags);
-	scsi_cmd_get_serial(host, cmd); 
+	scsi_cmd_get_serial(host, cmd);
 
 	if (unlikely(host->shost_state == SHOST_DEL)) {
 		cmd->result = (DID_NO_CONNECT << 16);
@@ -814,7 +824,7 @@ int scsi_track_queue_full(struct scsi_device *sdev, int depth)
 		scsi_adjust_queue_depth(sdev, 0, sdev->host->cmd_per_lun);
 		return -1;
 	}
-	
+
 	if (sdev->ordered_tags)
 		scsi_adjust_queue_depth(sdev, MSG_ORDERED_TAG, depth);
 	else
@@ -1059,9 +1069,38 @@ MODULE_LICENSE("GPL");
 module_param(scsi_logging_level, int, S_IRUGO|S_IWUSR);
 MODULE_PARM_DESC(scsi_logging_level, "a bit mask of logging levels");
 
+static int hdledcontrol_read_fn(char *buf, char **start, off_t offset, int count, int *eof, void *data)
+{
+	int len;
+	len = snprintf(buf, count,
+					"Define:\n"
+					"  RED: %d\n"
+					"  GREEN: %d\n"
+					"  ORANGE: %d\n"
+					"  NO_COLOR: %d\n"
+					"  DEFAULT: %d\n"
+					"\n"
+					"  CurrentColor: %d\n",
+					RED, GREEN, ORANGE, NO_COLOR, LED_DEFAULT, atomic_read(&hdled_color));
+	return len;
+}
+
+static int hdledcontrol_write_fn(struct file *file, const char __user *buffer, unsigned long count, void *data)
+{
+	int flag = (int)simple_strtol(buffer, &buffer, 10);
+
+	if(flag < NO_COLOR || flag > ORANGE) {
+		flag = LED_DEFAULT;
+	}
+
+	atomic_set(&hdled_color, flag);
+	return count;
+}
+
 static int __init init_scsi(void)
 {
 	int error;
+	static struct proc_dir_entry  *hdled_proc;
 
 	error = scsi_init_queue();
 	if (error)
@@ -1083,6 +1122,11 @@ static int __init init_scsi(void)
 		goto cleanup_sysctl;
 
 	scsi_netlink_init();
+
+	//Create /proc/hd_led_color
+	hdled_proc = create_proc_entry("hd_led_color", 0666, NULL);
+	hdled_proc->read_proc = hdledcontrol_read_fn;
+	hdled_proc->write_proc = hdledcontrol_write_fn;
 
 	printk(KERN_NOTICE "SCSI subsystem initialized\n");
 	return 0;
