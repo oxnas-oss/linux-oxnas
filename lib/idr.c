@@ -356,8 +356,8 @@ static void sub_remove(struct idr *idp, int shift, int id)
 		}
 		if (!*paa)
 			idp->layers = 0;
-	} else
-		idr_remove_warning(id);
+	} //else
+		//idr_remove_warning(id);
 }
 
 /**

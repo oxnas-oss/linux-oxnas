@@ -59,6 +59,9 @@
 #include <scsi/scsi_ioctl.h>
 #include <scsi/scsicam.h>
 #include <scsi/sd.h>
+#include <linux/proc_fs.h>
+
+
 
 #include "scsi_logging.h"
 
@@ -111,6 +114,12 @@ static const char *sd_cache_types[] = {
 	"write through", "none", "write back",
 	"write back, no read (daft)"
 };
+
+static int sd_start_stop_device(struct scsi_disk *sdkp, int start);
+extern struct kset block_subsys;
+extern struct mutex block_subsys_lock;
+
+
 
 static ssize_t sd_store_cache_type(struct class_device *cdev, const char *buf,
 				   size_t count)
@@ -314,7 +323,7 @@ static struct scsi_disk *scsi_disk_get(struct gendisk *disk)
 	return sdkp;
 }
 
-static struct scsi_disk *scsi_disk_get_from_dev(struct device *dev)
+struct scsi_disk *scsi_disk_get_from_dev(struct device *dev)
 {
 	struct scsi_disk *sdkp;
 
@@ -1712,6 +1721,14 @@ static int sd_remove(struct device *dev)
 	struct scsi_disk *sdkp = dev_get_drvdata(dev);
 
 	class_device_del(&sdkp->cdev);
+
+	printk(KERN_INFO"Remove %s\n", sdkp->disk->disk_name);
+
+	// 2009.5.19  GeorgeKang, remove disk name from sd_index_idr
+	spin_lock(&sd_index_lock);
+	idr_remove(&sd_index_idr, sdkp->index);
+	spin_unlock(&sd_index_lock);
+
 	del_gendisk(sdkp->disk);
 	sd_shutdown(dev);
 
@@ -1719,6 +1736,9 @@ static int sd_remove(struct device *dev)
 	dev_set_drvdata(dev, NULL);
 	class_device_put(&sdkp->cdev);
 	mutex_unlock(&sd_ref_mutex);
+
+
+
 
 	return 0;
 }
@@ -1840,6 +1860,82 @@ done:
 	return ret;
 }
 
+/*
+ *proc read/write function
+ *	Just use for test and hack.
+ */
+
+#if 0
+static struct proc_dir_entry  *hd_sleep;
+static atomic_t hd_sleep_status = ATOMIC_INIT(1);
+
+static int hd_sleep_read_fn(char *buf, char **start, off_t offset,
+                int count, int *eof, void *data)
+{
+	int     len;
+
+	len = sprintf(buf, "%d\n", atomic_read(&hd_sleep_status));
+	*eof = 1;
+
+	return len;
+
+}
+
+static int hd_sleep_write_fn(struct file *file, const char __user *buffer,
+                unsigned long count, void *data)
+{
+	char my_buf[10];
+
+	if(count > 2)
+	{
+		printk(KERN_ERR"Fail to write to proc\n");
+		return -EFAULT;
+	}
+
+	copy_from_user(my_buf, buffer, count);
+
+	if(my_buf[0] == '0')
+		atomic_set(&hd_sleep_status, 0);
+	else
+	{
+		struct gendisk *sgp = NULL;
+
+		mutex_lock(&block_subsys_lock);
+		list_for_each_entry(sgp, &block_subsys.list, kobj.entry)
+		{
+			if(sgp == NULL) continue;
+			if(strncmp(sgp->disk_name, "sd", 2) == 0)
+			{
+				struct scsi_disk *sdkp;
+				struct device *dev;
+				struct Scsi_Host *shst;
+
+				sdkp = scsi_disk_get(sgp);
+				dev = &(sdkp->device->sdev_gendev);
+				//if(dev->release != NULL)
+				shst = dev_to_shost(dev);
+				//shst->hostt;
+
+
+				printk(KERN_INFO"%s\n", shst->hostt->name);
+				printk(KERN_INFO"gendisk -> %s\n", sgp->disk_name);
+
+
+				if(sdkp == NULL) continue;
+
+				sd_start_stop_device(sdkp, 0);
+				scsi_disk_put(sdkp);
+			}
+		}
+		 mutex_unlock(&block_subsys_lock);
+
+	}
+	return count;
+
+}
+#endif
+#include "sd_monitor.c"
+
 /**
  *	init_sd - entry point for this driver (both when built in or when
  *	a module).
@@ -1866,6 +1962,8 @@ static int __init init_sd(void)
 	err = scsi_register_driver(&sd_template.gendrv);
 	if (err)
 		goto err_out_class;
+
+	sd_init_power_saving();
 
 	return 0;
 

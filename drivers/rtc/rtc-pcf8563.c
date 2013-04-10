@@ -25,7 +25,7 @@
  * located at 0x51 will pass the validation routine due to
  * the way the registers are implemented.
  */
-static unsigned short normal_i2c[] = { I2C_CLIENT_END };
+static unsigned short normal_i2c[] = {0x51, I2C_CLIENT_END };		//GeorgeKang: Add rtc address on i2c
 
 /* Module parameters */
 I2C_CLIENT_INSMOD;
@@ -114,13 +114,18 @@ static int pcf8563_get_datetime(struct i2c_client *client, struct rtc_time *tm)
 	tm->tm_mday = BCD2BIN(buf[PCF8563_REG_DM] & 0x3F);
 	tm->tm_wday = buf[PCF8563_REG_DW] & 0x07;
 	tm->tm_mon = BCD2BIN(buf[PCF8563_REG_MO] & 0x1F) - 1; /* rtc mn 1-12 */
+	tm->tm_year = BCD2BIN(buf[PCF8563_REG_YR])
+		+ (buf[PCF8563_REG_MO] & PCF8563_MO_C ? 0 : 100);
+#if 0
+	Original code of 2.6.24.4. The logic may cause misjudge on centry.
+	So I revert it back to the version of 2.6.18.6.
 	tm->tm_year = BCD2BIN(buf[PCF8563_REG_YR]);
 	if (tm->tm_year < 70)
 		tm->tm_year += 100;	/* assume we are in 1970...2069 */
 	/* detect the polarity heuristically. see note above. */
 	pcf8563->c_polarity = (buf[PCF8563_REG_MO] & PCF8563_MO_C) ?
 		(tm->tm_year >= 100) : (tm->tm_year < 100);
-
+#endif
 	dev_dbg(&client->dev, "%s: tm is secs=%d, mins=%d, hours=%d, "
 		"mday=%d, mon=%d, year=%d, wday=%d\n",
 		__FUNCTION__,
@@ -160,9 +165,12 @@ static int pcf8563_set_datetime(struct i2c_client *client, struct rtc_time *tm)
 
 	/* year and century */
 	buf[PCF8563_REG_YR] = BIN2BCD(tm->tm_year % 100);
+	if (tm->tm_year < 100)
+		buf[PCF8563_REG_MO] |= PCF8563_MO_C;
+/*Original code of 2.6.24.4.
 	if (pcf8563->c_polarity ? (tm->tm_year >= 100) : (tm->tm_year < 100))
 		buf[PCF8563_REG_MO] |= PCF8563_MO_C;
-
+*/
 	buf[PCF8563_REG_DW] = tm->tm_wday & 0x07;
 
 	/* write register's data */

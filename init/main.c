@@ -77,6 +77,7 @@
 #warning gcc-4.1.0 is known to miscompile the kernel.  A different compiler version is recommended.
 #endif
 
+
 static int kernel_init(void *);
 
 extern void init_IRQ(void);
@@ -101,6 +102,9 @@ static inline void mark_rodata_ro(void) { }
 #ifdef CONFIG_TC
 extern void tc_init(void);
 #endif
+
+extern void kernel_start_up_blk(void);
+extern void init_sys_led(void);
 
 enum system_states system_state;
 EXPORT_SYMBOL(system_state);
@@ -645,6 +649,9 @@ asmlinkage void __init start_kernel(void)
 	acpi_early_init(); /* before LAPIC and SMP init */
 
 	/* Do the rest non-__init'ed, we're now alive */
+	init_sys_led();
+	kernel_start_up_blk();
+
 	rest_init();
 }
 
