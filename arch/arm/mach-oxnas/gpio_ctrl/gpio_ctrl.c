@@ -53,6 +53,9 @@ MODULE_LICENSE("GPL v2");
 #define GPOUT_BLK_QUERY_IOC_NUM	_IO(BTNCPY_IOC_MAGIC, 6)
 #define BTN_POWER_ENABLE	_IO(BTNCPY_IOC_MAGIC, 7)
 #define BTN_RESET_ENABLE	_IO(BTNCPY_IOC_MAGIC, 8)
+#define BUTTON_TEST_IN_IOC_NUM  _IO(BTNCPY_IOC_MAGIC, 9)
+#define BUTTON_TEST_OUT_IOC_NUM _IO(BTNCPY_IOC_MAGIC, 10)
+
 
 #define	GPIO_WRITE_IOC_NUM	_IO(BTNCPY_IOC_MAGIC, 30)
 #define GPIO_READ_IOC_NUM	_IO(BTNCPY_IOC_MAGIC, 31)
@@ -75,7 +78,10 @@ dev_t	gpio_dev  = 0;
 #define SYS_LED_GPIO_REG_OFFSET			9
 
 #define HDD_LED_GREEN_GPIO_REG_OFFSET		22
+
 #define HDD_LED_RED_GPIO_REG_OFFSET		27
+
+
 
 #define COPY_LED_GREEN_GPIO_REG_OFFSET		33
 #define COPY_LED_RED_GPIO_REG_OFFSET		24
@@ -84,11 +90,17 @@ dev_t	gpio_dev  = 0;
 #define ESATA_LED_GREEN_GPIO_REG_OFFSET		26
 #define ESATA_LED_RED_GPIO_REG_OFFSET		28
 
-#define USB_LED_GREEN_GPIO_REG_OFFSET	31
-#define USB_LED_RED_GPIO_REG_OFFSET	32
+#define USB_LED_GREEN_GPIO_REG_OFFSET		31
 
+#ifdef CONFIG_ZYXEL_MODEL_NSA221
+	#define SYS_LED_ORANGE_GPIO_REG_OFFSET	32
+#else
+	#define USB_LED_RED_GPIO_REG_OFFSET	32
+#endif
 
 #define POWER_OFF_GPIO_REG_OFFSET	23
+
+#define HTP_GPIO_REG_PIN	20
 
 
 #define REG_CLEAR_BITS(addr, mask)     	writel(readl(addr) & ~mask, addr)
@@ -126,6 +138,20 @@ extern spinlock_t oxnas_gpio_spinlock;
 
 //---  shutdown enable/disable
 static atomic_t shutdown_enable = ATOMIC_INIT(1);
+
+/* Button test */
+#define BUTTON_NUM	3
+
+enum BUTTON_NUMBER {
+	RESET_BTN_NUM,
+	COPY_BTN_NUM,
+	POWER_BTN_NUM,
+};
+
+static atomic_t button_test_enable = ATOMIC_INIT(0);
+static atomic_t button_test_num = ATOMIC_INIT(BUTTON_NUM);
+
+
 struct gpio_write_data
 {
 	unsigned long gpio_query_addr;
@@ -357,7 +383,12 @@ struct led_blk_timer_data led2_blk_timer_data =
 
 struct led_blk_timer_data led3_blk_timer_data =
 {
+#ifdef  CONFIG_ZYXEL_MODEL_NSA221
+	{0x0,  USB_LED_GREEN_GPIO_REG_OFFSET},
+#else
 	{USB_LED_RED_GPIO_REG_OFFSET,  USB_LED_GREEN_GPIO_REG_OFFSET},
+#endif
+
 	&led3_blk_timer,
 	0,
 	0,
@@ -368,7 +399,11 @@ struct led_blk_timer_data led3_blk_timer_data =
 
 struct led_blk_timer_data led4_blk_timer_data =
 {
+#ifdef CONFIG_ZYXEL_MODEL_NSA221
+	{SYS_LED_ORANGE_GPIO_REG_OFFSET, SYS_LED_GPIO_REG_OFFSET},
+#else
 	{0x0, SYS_LED_GPIO_REG_OFFSET},
+#endif
 	&led4_blk_timer,
 	0,
 	0,
@@ -460,9 +495,11 @@ void turn_off_led(unsigned long led_num)
 
 	//printk(KERN_ERR"write = %x\n", readl(red_output_clr_reg) | GPIO_MASK(red_led_reg));
 	//printk(KERN_ERR"write1 = %x\n", readl(green_output_clr_reg) | GPIO_MASK(green_led_reg));
+	if(red_led_reg > 0)
+		writel(GPIO_MASK(red_led_reg), red_output_clr_reg);
 
-	writel(GPIO_MASK(red_led_reg), red_output_clr_reg);
-	writel(GPIO_MASK(green_led_reg), green_output_clr_reg);
+	if(green_led_reg > 0)
+		writel(GPIO_MASK(green_led_reg), green_output_clr_reg);
 
 	//printk(KERN_ERR"OUTPUT_CLR_REG = %x\n", readl(red_output_clr_reg));
 	//printk(KERN_ERR"OUTPUT_CLR_REG1 = %x\n", readl(green_output_clr_reg));
@@ -494,12 +531,12 @@ void turn_on_led(unsigned long led_num, unsigned long led_color)
 	green_output_clr_reg = gpio_config_regs[GPIO_CONFIG_NUM(green_led_reg)].OUTPUT_CLR_REG; // Use green gpio pin to get output clear
 
 	spin_lock(&oxnas_gpio_spinlock);
-	if(led_color & RED)
+	if((led_color & RED) && red_led_reg > 0)
 	{
 		writel(GPIO_MASK(red_led_reg), red_output_set_reg);				// turn on red(set red pin in output set)
 	}
 
-	if(led_color & GREEN)
+	if((led_color & GREEN) && green_led_reg > 0)
 	{
 		writel(GPIO_MASK(green_led_reg), green_output_set_reg);				// turn on green
 	}
@@ -532,6 +569,7 @@ void led_blk_timer_run(unsigned long in_data)
 		return ;
 	}
 
+
 	if(my_data->led_color & RED && my_data->led_color & GREEN)				// check blinking led color(orange)
 	{
 		unsigned long red_output_set_reg, green_output_set_reg;
@@ -551,15 +589,20 @@ void led_blk_timer_run(unsigned long in_data)
 		if(!bit_on)										// led on
 		{
 			spin_lock(&oxnas_gpio_spinlock);
-			writel(GPIO_MASK(red_led_reg), red_output_clr_reg);				// set red pin in output set
-			writel(GPIO_MASK(green_led_reg), green_output_clr_reg);				// set green pin in output set
+			if(red_led_reg > 0)
+				writel(GPIO_MASK(red_led_reg), red_output_clr_reg);			// set red pin in output set
+			if(green_led_reg > 0)
+				writel(GPIO_MASK(green_led_reg), green_output_clr_reg);			// set green pin in output set
 			spin_unlock(&oxnas_gpio_spinlock);
 		}
 		else											// led off
 		{
 			spin_lock(&oxnas_gpio_spinlock);
-			writel(GPIO_MASK(red_led_reg), red_output_set_reg);				// set red pin in output clear
-			writel(GPIO_MASK(green_led_reg),green_output_set_reg);				// set green pin in output clear
+
+			if(red_led_reg > 0)
+				writel(GPIO_MASK(red_led_reg), red_output_set_reg);			// set red pin in output clear
+			if(green_led_reg > 0)
+				writel(GPIO_MASK(green_led_reg),green_output_set_reg);			// set green pin in output clear
 			spin_unlock(&oxnas_gpio_spinlock);
 		}
 
@@ -574,10 +617,13 @@ void led_blk_timer_run(unsigned long in_data)
 		red_output_clr_reg = gpio_config_regs[GPIO_CONFIG_NUM(red_led_reg)].OUTPUT_CLR_REG;
 
 		spin_lock(&oxnas_gpio_spinlock);
-		if(!bit_on)
+		if(!bit_on && red_led_reg > 0)
 			writel(GPIO_MASK(red_led_reg), red_output_clr_reg);
 		else
-			writel(GPIO_MASK(red_led_reg), red_output_set_reg);
+		{
+			if(red_led_reg > 0)
+				writel(GPIO_MASK(red_led_reg), red_output_set_reg);
+		}
 		spin_unlock(&oxnas_gpio_spinlock);
 	}
 	else if(my_data->led_color & GREEN)
@@ -589,10 +635,13 @@ void led_blk_timer_run(unsigned long in_data)
 		green_output_clr_reg = gpio_config_regs[GPIO_CONFIG_NUM(green_led_reg)].OUTPUT_CLR_REG;
 
 		spin_lock(&oxnas_gpio_spinlock);
-		if(!bit_on)
+		if(!bit_on && green_led_reg > 0)
 			writel(GPIO_MASK(green_led_reg), green_output_clr_reg);
 		else
-			writel(GPIO_MASK(green_led_reg), green_output_set_reg);
+		{
+			if(green_led_reg > 0)
+				writel(GPIO_MASK(green_led_reg), green_output_set_reg);
+		}
 		spin_unlock(&oxnas_gpio_spinlock);
 
 	}
@@ -616,26 +665,28 @@ void init_all_led_config_regs(void)
 		red_led_reg = all_led_blk_timer_data_ptr[i]->led_gpio_regoffset[RED - 1];		// get red led pin
 		green_led_reg = all_led_blk_timer_data_ptr[i]->led_gpio_regoffset[GREEN - 1];		// get green led pin
 
-		printk(KERN_ERR"red_led_reg = %x\n", red_led_reg);
-		printk(KERN_ERR"green_led_reg = %x\n", green_led_reg);
 
 		red_output_set_reg = gpio_config_regs[GPIO_CONFIG_NUM(red_led_reg)].OUTPUT_SET_REG;	// output set reg for red led
 		green_output_set_reg = gpio_config_regs[GPIO_CONFIG_NUM(green_led_reg)].OUTPUT_SET_REG;	// output set reg for green led
 
 		spin_lock(&oxnas_gpio_spinlock);
-		//Disable other uses (primary)
-		REG_CLEAR_BITS(gpio_config_regs[GPIO_CONFIG_NUM(green_led_reg)].SWITCH_PRISEL_REG, GPIO_MASK(green_led_reg));
-		// disable secondary
-		REG_CLEAR_BITS(gpio_config_regs[GPIO_CONFIG_NUM(green_led_reg)].SWITCH_SECSEL_REG, GPIO_MASK(green_led_reg));
-		// disable 3rd use
-		REG_CLEAR_BITS(gpio_config_regs[GPIO_CONFIG_NUM(green_led_reg)].SWITCH_TERSEL_REG, GPIO_MASK(green_led_reg));
 
-		REG_CLEAR_BITS(gpio_config_regs[GPIO_CONFIG_NUM(green_led_reg)].SWITCH_PWM_REG, GPIO_MASK(green_led_reg));
+		if(green_led_reg > 0)
+		{
+			//Disable other uses (primary)
+			REG_CLEAR_BITS(gpio_config_regs[GPIO_CONFIG_NUM(green_led_reg)].SWITCH_PRISEL_REG, GPIO_MASK(green_led_reg));
+			// disable secondary
+			REG_CLEAR_BITS(gpio_config_regs[GPIO_CONFIG_NUM(green_led_reg)].SWITCH_SECSEL_REG, GPIO_MASK(green_led_reg));
+			// disable 3rd use
+			REG_CLEAR_BITS(gpio_config_regs[GPIO_CONFIG_NUM(green_led_reg)].SWITCH_TERSEL_REG, GPIO_MASK(green_led_reg));
 
-		// enable output for this green gpio pin
-		REG_SET_BITS((gpio_config_regs[GPIO_CONFIG_NUM(green_led_reg)].OUTPUT_ENABLE_REG),GPIO_MASK(green_led_reg));
+			REG_CLEAR_BITS(gpio_config_regs[GPIO_CONFIG_NUM(green_led_reg)].SWITCH_PWM_REG, GPIO_MASK(green_led_reg));
 
-		if(i < 4)	// led 4 without red led
+			// enable output for this green gpio pin
+			REG_SET_BITS((gpio_config_regs[GPIO_CONFIG_NUM(green_led_reg)].OUTPUT_ENABLE_REG),GPIO_MASK(green_led_reg));
+		}
+
+		if(red_led_reg > 0)	// led 4 without red led
 		{
 			// disable 1st use
 			REG_CLEAR_BITS(gpio_config_regs[GPIO_CONFIG_NUM(red_led_reg)].SWITCH_PRISEL_REG, GPIO_MASK(red_led_reg));
@@ -644,7 +695,7 @@ void init_all_led_config_regs(void)
 			// disable 3rd use
 			REG_CLEAR_BITS(gpio_config_regs[GPIO_CONFIG_NUM(red_led_reg)].SWITCH_TERSEL_REG, GPIO_MASK(red_led_reg));
 			// enable output
-			REG_SET_BITS((gpio_config_regs[GPIO_CONFIG_NUM(red_led_reg)].OUTPUT_ENABLE_REG),GPIO_MASK(red_led_reg));
+			REG_SET_BITS((gpio_config_regs[GPIO_CONFIG_NUM(red_led_reg)].OUTPUT_ENABLE_REG), GPIO_MASK(red_led_reg));
 		}
 
 		spin_unlock(&oxnas_gpio_spinlock);
@@ -742,7 +793,12 @@ static int set_led_config(unsigned long led_data)
 //***					Start of buzzer control						***//
 //-------------------------------------------------------------------------------------------------------- //
 
-#define PWM_PERIOD	7810
+
+#ifdef CONFIG_ZYXEL_MODEL_NSA221
+	#define PWM_PERIOD	810
+#else
+	#define PWM_PERIOD 	7810
+#endif
 #define MAX_PWMS     	16
 
 static struct timer_list        bz_timer;
@@ -768,6 +824,8 @@ typedef enum {
 	BUZ_FOREVER             /* keep buzzing */
 } buz_cmd_t;
 
+
+#define BZ_TIMER_PERIOD (HZ/2)
 #define TIME_BITS       5
 #define FREQ_BITS       4
 #define STATE_BITS      2
@@ -790,23 +848,47 @@ static void buzzer_timer_func(unsigned long in_data)
 {
 	spin_lock(&bz_lock);
 
-	--bz_time;
 
-	if(bz_time > 0)	// continue the timer
+	if(bz_time != 0)	// continue the timer
 	{
+
+#ifdef CONFIG_ZYXEL_MODEL_NSA221
+		int i;
+		unsigned short high_low = 0;
+
+		for(i = 0 ; i < 1000 ; i++)
+		{
+			if(high_low)
+				writel(GPIO_MASK(BZ_GPIO_REG_OFFSET),
+					gpio_config_regs[GPIO_CONFIG_NUM(BZ_GPIO_REG_OFFSET)].OUTPUT_SET_REG);
+			else
+				writel(GPIO_MASK(BZ_GPIO_REG_OFFSET),
+						gpio_config_regs[GPIO_CONFIG_NUM(BZ_GPIO_REG_OFFSET)].OUTPUT_CLR_REG);
+			udelay(500);
+			high_low ^= 1;
+		}
+#endif
+
 		bz_timer.function = buzzer_timer_func;
-		mod_timer(&bz_timer, jiffies + HZ);
-	}
-	else if(bz_time < 0)
-	{
-		bz_timer.function = buzzer_timer_func;
-		mod_timer(&bz_timer, jiffies + HZ);
+		mod_timer(&bz_timer, jiffies + BZ_TIMER_PERIOD);
+
 	}
 	else
 	{
-		// turn off buzzer
+		// turn off buzzer, output default val
+
+#ifdef  CONFIG_ZYXEL_MODEL_NSA221
+		REG_SET_BITS((gpio_config_regs[GPIO_CONFIG_NUM(BZ_GPIO_REG_OFFSET)].OUTPUT_CLR_REG),GPIO_MASK(BZ_GPIO_REG_OFFSET));
+#endif
+
+#ifdef  CONFIG_ZYXEL_MODEL_NSA210
+		/* Turn off PWM*/
 		writel(readl(SYS_CTRL_GPIO_PWMSEL_CTRL_0) &  ~(1 << BZ_GPIO_REG_OFFSET), SYS_CTRL_GPIO_PWMSEL_CTRL_0);
+#endif
+
 	}
+
+	if(bz_time > 0) --bz_time;
 
 	spin_unlock(&bz_lock);
 }
@@ -818,13 +900,21 @@ void init_buzzer_control(void)
 	CLEAR(SYS_CTRL_GPIO_PRIMSEL_CTRL_0, (1 << BZ_GPIO_REG_OFFSET));
 	CLEAR(SYS_CTRL_GPIO_SECSEL_CTRL_0, (1 << BZ_GPIO_REG_OFFSET));
 	CLEAR(SYS_CTRL_GPIO_TERTSEL_CTRL_0, (1 << BZ_GPIO_REG_OFFSET));
+	CLEAR(SYS_CTRL_GPIO_PWMSEL_CTRL_0, (1 << BZ_GPIO_REG_OFFSET));
 
-	// Enable PWM
-	//writel(readl(SYS_CTRL_GPIO_PWMSEL_CTRL_0) | (1 << BZ_GPIO_REG_OFFSET), SYS_CTRL_GPIO_PWMSEL_CTRL_0);
+
+	/* Set buzzer bit as gpio and output low */
+#ifdef	CONFIG_ZYXEL_MODEL_NSA221
+	REG_SET_BITS((gpio_config_regs[GPIO_CONFIG_NUM(BZ_GPIO_REG_OFFSET)].OUTPUT_ENABLE_REG),GPIO_MASK(BZ_GPIO_REG_OFFSET));
+	REG_SET_BITS((gpio_config_regs[GPIO_CONFIG_NUM(BZ_GPIO_REG_OFFSET)].OUTPUT_CLR_REG),GPIO_MASK(BZ_GPIO_REG_OFFSET));
+#endif
+
+#ifdef	CONFIG_ZYXEL_MODEL_NSA210
 
 	writel((1<<SYS_CTRL_RSTEN_MISC_BIT), SYS_CTRL_RSTEN_CLR_CTRL);
 	writel(PWM_PERIOD, PWM_CLOCK_REGISTER);
 	writel(250, (PWM_DATA_REGISTER_BASE+4*(BZ_GPIO_REG_OFFSET % MAX_PWMS)));
+#endif
 	// init bz timer
 	init_timer(&bz_timer);
 	bz_timer.function = buzzer_timer_func;
@@ -865,18 +955,20 @@ int set_buzzer(unsigned long bz_data)
 
 		if(time >= 32 || status == BUZ_FOREVER) time = -1;
 
-		if(time == 0) time = 1;
-
 		bz_time = time;
 
-		// enable bz
+#ifdef	CONFIG_ZYXEL_MODEL_NSA210
+		/* Enable buzzer */
 		writel(readl(SYS_CTRL_GPIO_PWMSEL_CTRL_0) | (1 << BZ_GPIO_REG_OFFSET), SYS_CTRL_GPIO_PWMSEL_CTRL_0);
+#endif
 
 		bz_timer.function = buzzer_timer_func;
 		mod_timer(&bz_timer, jiffies + HZ);
 	}
 
 	spin_unlock(&bz_lock);
+
+	return 0;
 
 }
 
@@ -895,6 +987,8 @@ static struct timer_list	btncpy_timer;
 
 static int    btncpy_pid = 0;
 static int    btncpy_nr_devs = 1;
+static int    btn_test_num = 0;
+
 struct cdev *btncpy_cdev ;
 
 // work to to do something about button
@@ -919,9 +1013,29 @@ struct workqueue_struct *btn_workqueue;
 
 //***			GeorgeKang:  Help function for button control 		    ***//
 //-------------------------------------------------------------------------------------//
+#define BEEP_DURATION   1000
 static void  Beep(void)
 {
-	printk(KERN_ERR"Beep\n");
+#ifdef  CONFIG_ZYXEL_MODEL_NSA221
+	int i;
+	unsigned short high_low = 0;
+
+	for(i = 0 ; i < BEEP_DURATION ; i++)
+	{
+		if(high_low)
+			writel(GPIO_MASK(BZ_GPIO_REG_OFFSET),
+					gpio_config_regs[GPIO_CONFIG_NUM(BZ_GPIO_REG_OFFSET)].OUTPUT_SET_REG);
+		else
+			writel(GPIO_MASK(BZ_GPIO_REG_OFFSET),
+					gpio_config_regs[GPIO_CONFIG_NUM(BZ_GPIO_REG_OFFSET)].OUTPUT_CLR_REG);
+		udelay(500);
+		high_low ^= 1;
+	}
+
+	writel(GPIO_MASK(BZ_GPIO_REG_OFFSET),gpio_config_regs[GPIO_CONFIG_NUM(BZ_GPIO_REG_OFFSET)].OUTPUT_CLR_REG);
+#endif
+
+#ifdef  CONFIG_ZYXEL_MODEL_NSA210
 	spin_lock(&oxnas_gpio_spinlock);
 	writel(readl(SYS_CTRL_GPIO_PWMSEL_CTRL_0) | (1 << BZ_GPIO_REG_OFFSET), SYS_CTRL_GPIO_PWMSEL_CTRL_0);
 	spin_unlock(&oxnas_gpio_spinlock);
@@ -931,6 +1045,12 @@ static void  Beep(void)
 	spin_lock(&oxnas_gpio_spinlock);
 	writel(readl(SYS_CTRL_GPIO_PWMSEL_CTRL_0) &  ~(1 << BZ_GPIO_REG_OFFSET), SYS_CTRL_GPIO_PWMSEL_CTRL_0);
 	spin_unlock(&oxnas_gpio_spinlock);
+
+#endif
+
+
+
+
 }
 
 void power_off(void *no_used)
@@ -1005,17 +1125,28 @@ static void btnpow_timer_func(unsigned long in_data)
 
 	if(Button_Released(GPIO_A_DATA, POWER_GPIO_REG_OFFSET))
 	{
-		if(polling_times >= QUICK_PRESS_TIME  && polling_times <= QUICK_PRESS_TIME + 1)
+		if(atomic_read(&button_test_enable) &&
+			(atomic_read(&button_test_num) == POWER_BTN_NUM))
 		{
-			PREPARE_WORK(&halt_nsa, nsa_shutdown_func);
-			queue_work(btn_workqueue,&halt_nsa);
-			//power_off(NULL);				// work around first
-		} else if(polling_times >= PRESS_TIME) {
-			//	del_timer(&btnpow_timer);
-			power_off(NULL);
+			atomic_set(&button_test_enable, 0);
+			PREPARE_WORK(&btncpy_signal10, btncpy_signal_func10);
+			queue_work(btn_workqueue, &btncpy_signal10);
 
 		}
-		else;
+		else
+		{
+			if(polling_times >= QUICK_PRESS_TIME  && polling_times < PRESS_TIME)
+			{
+				PREPARE_WORK(&halt_nsa, nsa_shutdown_func);
+				queue_work(btn_workqueue,&halt_nsa);
+				//power_off(NULL);				// work around first
+			} else if(polling_times >= PRESS_TIME) {
+				//	del_timer(&btnpow_timer);
+				power_off(NULL);
+
+			}
+			else;
+		}
 
 		polling_times = 0;
 
@@ -1042,27 +1173,37 @@ static void btnreset_timer_func(unsigned long in_data)
 
 	if(Button_Released(GPIO_A_DATA, RESET_GPIO_REG_OFFSET))
 	{
-		printk(KERN_ERR"Reset button released\n");
-		if(polling_times >= 2 && polling_times <= 3)
-		{
-			printk(KERN_INFO"Reset admin password & ip setting ........\n");  // May move to Reset_UserInfo_func
-			PREPARE_WORK(&Reset_User_Info, Reset_UserInfo_func);
-			queue_work(btn_workqueue, &Reset_User_Info);
-		}
-		else if(polling_times >= 6 && polling_times <= 7)
-		{
-			printk(KERN_INFO"Open backdoor ... \n");			//...
-			PREPARE_WORK(&Open_Backdoor, Open_Backdoor_func);
-			queue_work(btn_workqueue, &Open_Backdoor);
-		}
-		else if(polling_times >= 10)
-		{
-			printk(KERN_INFO"remove configuration (etc/zyxel/config) and reboot\n");
+		if(atomic_read(&button_test_enable) &&
+				(atomic_read(&button_test_num) == RESET_BTN_NUM))
 
-			PREPARE_WORK(&Reset_To_Default, Reset_To_Defu_func);
-			queue_work(btn_workqueue, &Reset_To_Default);
+		{
+			atomic_set(&button_test_enable, 0);
+			PREPARE_WORK(&btncpy_signal10, btncpy_signal_func10);
+			queue_work(btn_workqueue, &btncpy_signal10);
 		}
-		else ;
+		else
+		{
+			if(polling_times >= 2 && polling_times <= 3)
+			{
+				printk(KERN_INFO"Reset admin password & ip setting ........\n");  // May move to Reset_UserInfo_func
+				PREPARE_WORK(&Reset_User_Info, Reset_UserInfo_func);
+				queue_work(btn_workqueue, &Reset_User_Info);
+			}
+			else if(polling_times >= 6 && polling_times <= 7)
+			{
+				printk(KERN_INFO"Open backdoor ... \n");			//...
+				PREPARE_WORK(&Open_Backdoor, Open_Backdoor_func);
+				queue_work(btn_workqueue, &Open_Backdoor);
+			}
+			else if(polling_times >= 10)
+			{
+				printk(KERN_INFO"remove configuration (etc/zyxel/config) and reboot\n");
+
+				PREPARE_WORK(&Reset_To_Default, Reset_To_Defu_func);
+				queue_work(btn_workqueue, &Reset_To_Default);
+			}
+			else ;
+		}
 
 		polling_times = 0;
 
@@ -1151,21 +1292,32 @@ static void btncpy_timer_func(unsigned long in_data)
 	gcr = &(gpio_config_regs[GPIO_CONFIG_NUM(COPY_GPIO_REG_OFFSET)]);
 	if(Button_Released(GPIO_A_DATA, COPY_GPIO_REG_OFFSET))
 	{
-		if(btncpy_pid)
+		if(atomic_read(&button_test_enable) &&
+				(atomic_read(&button_test_num) == COPY_BTN_NUM))
+
 		{
-			if(polling_times >= 30 && polling_times < 300) {
-				PREPARE_WORK(&btncpy_signal12, btncpy_signal_func12);
-				queue_work(btn_workqueue, &btncpy_signal12);
-			}
-			else if(polling_times >= 300)
+			atomic_set(&button_test_enable, 0);
+			PREPARE_WORK(&btncpy_signal10, btncpy_signal_func10);
+			queue_work(btn_workqueue, &btncpy_signal10);
+		}
+		else
+		{
+			if(btncpy_pid)
 			{
-				show_state();
-				show_mem();
-			}
-			else
-			{
-				PREPARE_WORK(&btncpy_signal10, btncpy_signal_func10);
-				queue_work(btn_workqueue, &btncpy_signal10);
+				if(polling_times >= 30 && polling_times < 300) {
+					PREPARE_WORK(&btncpy_signal12, btncpy_signal_func12);
+					queue_work(btn_workqueue, &btncpy_signal12);
+				}
+				else if(polling_times >= 300)
+				{
+					show_state();
+					show_mem();
+				}
+				else
+				{
+					PREPARE_WORK(&btncpy_signal10, btncpy_signal_func10);
+					queue_work(btn_workqueue, &btncpy_signal10);
+				}
 			}
 		}
 		polling_times = 0;
@@ -1200,10 +1352,6 @@ irqreturn_t gpio_A_interrupt(int irq, void *dev_id)
 	spin_lock(&oxnas_gpio_spinlock);
 	int_status = readl((volatile unsigned long *)GPIO_A_INTERRUPT_STATUS_REGISTER);
 	spin_unlock(&oxnas_gpio_spinlock);
-
-	printk(KERN_ERR"GPIO A status = %x\n", int_status);
-	printk(KERN_ERR"Interrupt A triggered\n");
-
 
 	if(int_status & GPIO_MASK(RESET_GPIO_REG_OFFSET))
 	{
@@ -1346,11 +1494,6 @@ static int btncpy_ioctl(struct inode *inode, struct file *file, unsigned int cmd
 	unsigned long led_index, _led_value, ret = 0;
 	struct gpio_write_data	w_data;
 
-	printk(KERN_ERR"ioctl input num = %x\n", cmd);
-
-	printk(KERN_ERR"GPIO_READ_IOC_NUM = %x\n", GPIO_READ_IOC_NUM);
-
-
 	switch(cmd)
 	{
 		case BTNCPY_IOC_SET_NUM:
@@ -1472,6 +1615,16 @@ static int btncpy_ioctl(struct inode *inode, struct file *file, unsigned int cmd
 				return readl(gpio_table[gpio_query_index]);
 			}
 			break;
+		case BUTTON_TEST_IN_IOC_NUM:
+			btncpy_pid = arg >> 3;
+			atomic_set(&button_test_enable, 1);
+			atomic_set(&button_test_num, arg & 0x7);
+			break;
+
+		case BUTTON_TEST_OUT_IOC_NUM:
+			atomic_set(&button_test_enable, 0);
+			atomic_set(&button_test_num, BUTTON_NUM);
+
 		default :
 			return -ENOTTY;
 	}
@@ -1586,6 +1739,46 @@ void DumpGPIO_B( void )
 
 
 
+/*  HTP test pin */
+
+static void init_htp_pin()	/* Set as gpio input */
+{
+	struct gpio_config_registers *regs;
+	unsigned gpio_num_mask, gpio_pin;
+
+	gpio_pin = HTP_GPIO_REG_PIN;
+	gpio_num_mask = GPIO_MASK(gpio_pin);
+
+	regs = &(gpio_config_regs[GPIO_CONFIG_NUM(gpio_pin)]);
+
+	writel(readl(regs->SWITCH_PRISEL_REG) & ~gpio_num_mask, regs->SWITCH_PRISEL_REG);
+	writel(readl(regs->SWITCH_SECSEL_REG) & ~gpio_num_mask, regs->SWITCH_SECSEL_REG);
+	writel(readl(regs->SWITCH_TERSEL_REG) & ~gpio_num_mask, regs->SWITCH_TERSEL_REG);
+	writel(gpio_num_mask, regs->SWITCH_CLR_OE_REG);
+}
+
+static struct proc_dir_entry *htp_status;
+static int htp_status_read_fn(char *buf, char **start, off_t offset,
+                int count, int *eof, void *data)
+{
+	unsigned long len;
+	if((readl(GPIO_A_DATA) & GPIO_MASK(HTP_GPIO_REG_PIN )))
+		len = sprintf(buf, "1\n");
+	else
+		len = sprintf(buf, "0\n");
+
+	*eof = 1;
+
+	return len;
+
+}
+
+static int htp_status_write_fn(struct file *file, const char __user *buffer,
+                unsigned long count, void *data)
+{
+	return 0;
+}
+
 
 ///		proc fs to enable/disable poweroff, restart, ...		///
 //
@@ -1664,6 +1857,23 @@ static int led_ctrl_write_fn(struct file* file, const char __user *buffer,
 
 }
 
+static struct proc_dir_entry* gpio_proc;
+
+static int gpio_read_fn(char *buf, char **start, off_t offset,
+                int count, int *eof, void *data)
+{
+	DumpGPIO_A();
+	DumpGPIO_B();
+	*eof = 1;
+	return 0;
+}
+
+static int gpio_write_fn(struct file* file, const char __user *buffer,
+                                unsigned long count, void *data)
+{
+	return 0;
+}
+
 
 //////////////////////////////////////////////////////////////////
 
@@ -1692,7 +1902,6 @@ static int __init gpio_init(void)
 
 	if(err) printk(KERN_INFO "Error adding device\n");
 
-	printk(KERN_ERR"LED_SET_CTL_IOC_NUM= %x\n", LED_SET_CTL_IOC_NUM);
 	//-------------------------------------------------------------------------------//
 
 	shutdown_status = create_proc_entry("shutdownStatus", 0644, NULL);
@@ -1703,6 +1912,16 @@ static int __init gpio_init(void)
 	}
 
 	//-------------------------------------------------------------------------------//
+	htp_status = create_proc_entry("htp", 0644, NULL);
+	if(htp_status != NULL)
+	{
+		htp_status->read_proc = htp_status_read_fn;
+		htp_status->write_proc = htp_status_write_fn;
+	}
+
+
+	/* ------------------------------------------------------------------------------*/
+
 
 	led_proc = create_proc_entry("led", 0644, NULL);
 	if(led_proc != NULL)
@@ -1711,11 +1930,20 @@ static int __init gpio_init(void)
 		led_proc->write_proc = led_ctrl_write_fn;
 	}
 
+	gpio_proc = create_proc_entry("gpio", 0644, NULL);
+	if(gpio_proc != NULL)
+	{
+		gpio_proc->read_proc = gpio_read_fn;
+		gpio_proc->write_proc = gpio_write_fn;
+	}
+
 	//-------------------------------------------------------------------------------//
 
 
 	//DumpGPIO_A();
 	//DumpGPIO_B();
+
+	init_htp_pin();
 
 	init_power_off_reg();
 
@@ -1828,8 +2056,11 @@ static void __exit gpio_exit(void)
 		del_timer(&btncpy_timer);
 
 
+	remove_proc_entry("htp", NULL);
 	remove_proc_entry("shutdownStatus", NULL);
 	remove_proc_entry("led", NULL);
+
+	remove_proc_entry("gpio", NULL);
 
 	// disable bz
 	writel(readl(SYS_CTRL_GPIO_PWMSEL_CTRL_0) & ~(1 << BZ_GPIO_REG_OFFSET), SYS_CTRL_GPIO_PWMSEL_CTRL_0);

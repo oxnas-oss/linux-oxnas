@@ -44,4 +44,6 @@ obj-$(CONFIG_WDC_LEDS_TRIGGER_SATA_DISK) += wdc-ledtrig-sata.o
 
 
 # gpio control interface
-obj-${CONFIG_OXNAS_GPIO_CTRL} += gpio_ctrl/
+obj-${CONFIG_ZYXEL_GPIO_CTRL} += gpio_ctrl/
+
+obj-$(CONFIG_ZYXEL_HW_TEST) += hwTest.o

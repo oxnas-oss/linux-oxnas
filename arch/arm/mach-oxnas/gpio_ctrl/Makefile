@@ -1,1 +1,1 @@
-obj-${CONFIG_OXNAS_GPIO_CTRL} += gpio_ctrl.o
+obj-${CONFIG_ZYXEL_GPIO_CTRL} += gpio_ctrl.o

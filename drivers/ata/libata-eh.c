@@ -2204,6 +2204,8 @@ int ata_eh_reset(struct ata_link *link, int classify,
 	if (verbose)
 		ata_link_printk(link, KERN_INFO, "%s resetting link\n",
 				reset == softreset ? "soft" : "hard");
+	printk(KERN_ERR "%s(%d):Sleep 1 sec before any error happens\n",__FUNCTION__,__LINE__);
+	mdelay(1000);
 
 	/* mark that this EH session started with reset */
 	if (reset == hardreset)

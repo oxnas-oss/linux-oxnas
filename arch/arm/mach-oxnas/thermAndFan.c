@@ -46,9 +46,17 @@
 
 /* Set this define to simulate different temperature values and test the
  * working of the fan control module
+ * When doing simulate, choose only one between SIMULATE_TEMPERATURE SIMULATE_HIGH_TEMPERATURE SIMULATE_LOW_TEMPERATURE
  */
 //#define SIMULATE_TEMPERATURE 1
 #undef SIMULATE_TEMPERATURE
+//#define SIMULATE_HIGH_TEMPERATURE
+//#define SIMULATE_LOW_TEMPERATURE
+//#undef SIMULATE_LOW_TEMPERATURE
+
+//#define FORCE_PWM	30
+
+
 
 /******************************************************************************
  *                                                                            *
@@ -80,12 +88,19 @@
  *    1/T = A + B.ln(Rt) + C.ln(Rt)^3                                         *
  *                                                                            *
  ******************************************************************************/
-
+#ifdef CONFIG_ZYXEL_MODEL_NSA221	/* NSA221 */
 #define MAX_FAN_RATIO_CHANGE 		20
 #define OXSEMI_FAN_SPEED_RATIO_MIN 	0
-#define OXSEMI_FAN_SPEED_RATIO_MAX 	255
+#define OXSEMI_FAN_SPEED_RATIO_MAX 	179	/* Set it to 70% */
 #define FAN_SPEED_RATIO_SET 		(PWM_DATA_2)
 #define MIN_TEMP_COUNT_CHANGE 		2
+#else	/* NSA210 */
+#define MAX_FAN_RATIO_CHANGE 		20
+#define OXSEMI_FAN_SPEED_RATIO_MIN 	0
+#define OXSEMI_FAN_SPEED_RATIO_MAX 	204	/* 80% */
+#define FAN_SPEED_RATIO_SET 		(PWM_DATA_2)
+#define MIN_TEMP_COUNT_CHANGE 		2
+#endif
 
 #define NUMBER_OF_ITERATIONS 		10
 #define TEMP_MEASURE_NORMAL 		0
@@ -104,10 +119,17 @@
 
 
 /* This is not absolute temperature but counter val - thermistorCalibration*/
+#ifdef CONFIG_ZYXEL_MODEL_NSA221	/* NSA221 */
 static int hot_limit 		= 16;
-static int cold_limit 		= 104;
+static int cold_limit 		= 59;	/* NSA221 use bigger FAN, set cold limit higher make it quiet */
+static int min_fan_speed_ratio  = 0;	/* NSA221 is equipped with a 5V power to FAN even when PWM is 0 */
+static int fan_pulse_per_rev 	= 2;
+#else	/* NSA210 */
+static int hot_limit 		= 16;
+static int cold_limit 		= 40;	/* 40: 1800 rpm at 25 degree C, 64: 800 rpm at 25 degree C */
 static int min_fan_speed_ratio  = 64;
 static int fan_pulse_per_rev 	= 2;
+#endif
 
 /* Status reporters */
 static int output_flag 		= 0;
@@ -117,6 +139,13 @@ static int current_speed 	= 0;
 /* Error Reporters */
 static int error_temp 	= 0;
 static int error_fan 	= 0;
+
+/* to overwrite PWM or not:
+ * 0-255 will overwrite PWM and other value will not overwrite and also enable the debug message of
+ * filter implemented in GetFanRPM_wrapper()
+ * Usage: echo 255 > /proc/therm-fan
+ */
+static int overwrite_fan_pwm_duty = 999;
 
 MODULE_AUTHOR(		"Anand Srinivasaraghavan"					);
 MODULE_DESCRIPTION(	"Driver for Temperature sense and Fan control of ox810" 		);
@@ -265,6 +294,8 @@ int GetFanRPM(void)
 	u32 iCounterValue;
 	int count = 1;
 
+#ifdef CONFIG_ZYXEL_MODEL_NSA210
+	/* response 0 rpm when PWM is 0 for NSA210, because the counter value is wrong in this case (chorus) */
 	if(thermostat->last_speed == OXSEMI_FAN_SPEED_RATIO_MIN)
 	{
 #ifdef DEBUG
@@ -272,7 +303,7 @@ int GetFanRPM(void)
 #endif
 		return OXSEMI_FAN_SPEED_RATIO_MIN;
 	}
-
+#endif
 
 // 	write_reg( TACHO_FAN_ONE_SHOT_CONTROL, (1 << TACHO_FAN_ONE_SHOT_CONTROL_START));
 
@@ -309,8 +340,61 @@ int GetFanRPM(void)
 #ifdef SIMULATE_TEMPERATURE
 	printk(KERN_INFO "thermAndFan::GetFanRPM == %d\n", res);
 #endif /*SIMULATE_TEMPERATURE */
+#if defined SIMULATE_HIGH_TEMPERATURE || defined SIMULATE_LOW_TEMPERATURE
+	printk(KERN_INFO "thermAndFan::GetFanRPM == %d\n", res);
+#endif /*SIMULATE_HIGH_TEMPERATURE */
 
 	return res;
+}
+
+/*
+ * GetFanRPM_wrapper will use a sliding window to keep 10 record of Fan Speed and choose the mininum value
+ * @return an int that represents the fan speed in RPM, or a
+ * negative value in the case of error.
+ */
+int GetFanRPM_wrapper(void)
+{
+#if defined CONFIG_ZYXEL_MODEL_NSA221
+#define FAN_SPEED_WRAPPER_SLIDING_WINDOW_SIZE	8
+	static int fan_speed_queue[FAN_SPEED_WRAPPER_SLIDING_WINDOW_SIZE];
+	static int curr_pos_in_queue = 0;
+	static int valid_count = 0;
+	int wrapper_i = 0;
+
+	int curr_GetFanRPM = GetFanRPM();
+	fan_speed_queue[curr_pos_in_queue] = curr_GetFanRPM;
+	curr_pos_in_queue ++;
+	if(FAN_SPEED_WRAPPER_SLIDING_WINDOW_SIZE == curr_pos_in_queue)
+	{
+		curr_pos_in_queue = 0;
+	}
+	if(FAN_SPEED_WRAPPER_SLIDING_WINDOW_SIZE > valid_count)
+	{
+		valid_count ++;
+	}
+/*	printk(KERN_INFO "thermAndFan::GetFanRPM_wrapper valid_count       == %d\n", valid_count);
+	printk(KERN_INFO "thermAndFan::GetFanRPM_wrapper curr_pos_in_queue == %d\n", curr_pos_in_queue);
+*/
+	/* Get mininum value in the fan_speed_queue as Fan speed */
+	for(wrapper_i = 0; wrapper_i < valid_count; wrapper_i ++)
+	{
+		if ( 256 > overwrite_fan_pwm_duty && overwrite_fan_pwm_duty >= 0)
+		{	/* print out for checking */
+			printk(KERN_INFO "thermAndFan::GetFanRPM_wrapper queue[%d] == %d\n", wrapper_i, fan_speed_queue[wrapper_i]);
+		}
+		if(curr_GetFanRPM > fan_speed_queue[wrapper_i])
+		{
+			curr_GetFanRPM = fan_speed_queue[wrapper_i];
+		}
+	}
+	if ( 256 > overwrite_fan_pwm_duty && overwrite_fan_pwm_duty >= 0)
+	{	/* print out for checking */
+		printk(KERN_INFO "thermAndFan::GetFanRPM_wrapper result = %d\n", curr_GetFanRPM);
+	}
+	return curr_GetFanRPM;
+#else
+	return GetFanRPM();
+#endif	/* CONFIG_ZYXEL_MODEL_NSA221 */
 }
 
 static void read_sensors(struct thermostat *th)
@@ -319,6 +403,12 @@ static void read_sensors(struct thermostat *th)
 #ifdef SIMULATE_TEMPERATURE
 	static int curTemp =  30;
 #endif /* SIMULATE_TEMPERATURE */
+#ifdef SIMULATE_HIGH_TEMPERATURE
+	static int curTemp =  10;
+#endif /* SIMULATE_HIGH_TEMPERATURE */
+#ifdef SIMULATE_LOW_TEMPERATURE
+	static int curTemp =  110;
+#endif /* SIMULATE_LOW_TEMPERATURE */
 
 	if ( !th ) {
 		printk(KERN_INFO "thermAndFan::read_sensors $RTH NOT ESTABLISHED YET\n");
@@ -347,12 +437,15 @@ static void read_sensors(struct thermostat *th)
 			curTemp = hot_limit - 20;
 		printk(KERN_INFO "thermAndFan::read_sensors Temp Set to - %d\n", curTemp);
 	#endif /* SIMULATE_TEMPERATURE */
+	#if defined SIMULATE_HIGH_TEMPERATURE || defined SIMULATE_LOW_TEMPERATURE
+		th->temps = curTemp;
+	#endif /* SIMULATE_HIGH_TEMPERATURE */
 	break;
 
 	case 1:
 	default:
 
-		th->curr_speed  = GetFanRPM();
+		th->curr_speed  = GetFanRPM_wrapper();
 
 		/* Set to Temperature measurement */
 		write_reg( TACHO_THERMISTOR_CONTROL, ((1 << TACHO_THERMISTOR_CONTROL_THERM_ENABLE)
@@ -405,11 +498,24 @@ static void write_fan_speed(struct thermostat *th, int speed)
 	 */
 	if (speed > OXSEMI_FAN_SPEED_RATIO_MAX)
 		speed = OXSEMI_FAN_SPEED_RATIO_MAX;
-	else if ((speed < min_fan_speed_ratio) && (speed > OXSEMI_FAN_SPEED_RATIO_MIN))
+	else if (speed < min_fan_speed_ratio)
 		speed = min_fan_speed_ratio;
-	else if (speed < OXSEMI_FAN_SPEED_RATIO_MIN)
-		speed = OXSEMI_FAN_SPEED_RATIO_MIN;
 
+/*	printk(KERN_INFO "overwrite_fan_pwm_duty - %d\n", overwrite_fan_pwm_duty);
+*/
+	if ( 256 > overwrite_fan_pwm_duty && overwrite_fan_pwm_duty >= 0)
+	{
+		write_reg( FAN_SPEED_RATIO_SET, overwrite_fan_pwm_duty);
+//		printk(KERN_INFO "Force Speed Ratio Written - %d\n", overwrite_fan_pwm_duty);
+		th->last_speed = overwrite_fan_pwm_duty;
+		return;
+	}
+
+#if defined (FORCE_PWM)
+	write_reg( FAN_SPEED_RATIO_SET, FORCE_PWM );
+	printk(KERN_INFO "Force Speed Ratio Written - %d\n", FORCE_PWM);
+		return;
+#endif
 	if (th->last_speed == speed)
 		return;
 
@@ -418,6 +524,9 @@ static void write_fan_speed(struct thermostat *th, int speed)
 #ifdef SIMULATE_TEMPERATURE
 	printk(KERN_INFO "Speed Ratio Written - %d\n", speed);
 #endif /* SIMULATE_TEMPERATURE */
+#if defined SIMULATE_HIGH_TEMPERATURE || defined SIMULATE_LOW_TEMPERATURE
+	printk(KERN_INFO "Speed Ratio Written - %d\n", speed);
+#endif /* SIMULATE_HIGH_TEMPERATURE */
 
 	th->last_speed = speed;
 }
@@ -433,7 +542,7 @@ static void display_stats(struct thermostat *th)
 			 "  * fan speed: %d RPM\n\n",
 			 th->temps,
 			 min_fan_speed_ratio,
-			 GetFanRPM());
+			 GetFanRPM_wrapper());
 		th->cached_temp = th->temps;
 	}
 }
@@ -489,6 +598,10 @@ static void update_fan_speed(struct thermostat *th)
 		write_fan_speed(th, new_speed);
 		th->set_speed = new_speed;
 	}
+	else if ( 256 > overwrite_fan_pwm_duty && overwrite_fan_pwm_duty >= 0)
+	{
+		write_fan_speed(th, overwrite_fan_pwm_duty);
+	}
 }
 
 
@@ -541,12 +654,35 @@ oxsemi_therm_read(char *buf, char **start, off_t offset,
 		"      measured-fan_speed    	== %d\n"
 		"      last_temp_counter      	== %d\n"
 		"      temperature 		== %d\n",
-		thermostat->temps,
+		GetTemperatureCounter(),
 		thermostat->last_speed,
 		thermostat->curr_speed,
 		thermostat->last_var ,
 		GetTemperature());
 	return len;
+}
+
+static int
+oxsemi_therm_write(struct file *file, const char __user *buffer,
+		unsigned long count, void *data)
+{
+	char therm_write_buf[10];
+	long therm_write_input = 999;
+	if( 4 < count || 1 > count)
+	{
+		printk(KERN_ERR"thermAndFan::oxsemi_therm_write: Fail to write to proc, 0 - 999 is accepted\n");
+		return -EFAULT;
+	}
+	if( copy_from_user(therm_write_buf, buffer, count) > 0)
+	{
+		printk(KERN_ERR"thermAndFan::oxsemi_therm_write: Fail to write to proc, fail to copy from user space\n");
+		return -EFAULT;
+	}
+	therm_write_input = simple_strtol(therm_write_buf, NULL, 10);
+	printk(KERN_INFO"thermAndFan::oxsemi_therm_write: get argument %d\n", (int) therm_write_input);
+	overwrite_fan_pwm_duty = (int) therm_write_input;
+	printk(KERN_INFO"thermAndFan::oxsemi_therm_write: overwrite_fan_pwm_duty == %d\n", overwrite_fan_pwm_duty);
+	return count;
 }
 
 static struct proc_dir_entry *proc_oxsemi_therm;
@@ -569,7 +705,7 @@ static int thermAndFan_ioctl(struct inode *inode, struct file *file, unsigned in
 			return c_temp;
 			break;
 		case FAN_GET_IOC_NUM:
-			fan_rpm = GetFanRPM();
+			fan_rpm = GetFanRPM_wrapper();
 			return fan_rpm;
 			break;
 		case FAN_SET_IOC_NUM:
@@ -710,9 +846,10 @@ static int __init oxsemi_therm_init(void)
 	if (ret < 0)
 		return ret;
 
-	proc_oxsemi_therm = create_proc_entry("therm-fan", 0, NULL);
+	proc_oxsemi_therm = create_proc_entry("therm-fan", 0644, NULL);
 	if (proc_oxsemi_therm) {
 		proc_oxsemi_therm->read_proc = oxsemi_therm_read;
+		proc_oxsemi_therm->write_proc = oxsemi_therm_write;
 	} else {
 		printk(KERN_ERR "therm-fan: unable to register /proc/therm\n");
 	}

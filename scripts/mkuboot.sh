@@ -4,9 +4,7 @@
 # Build U-Boot image when `mkimage' tool is available.
 #
 
-#MKIMAGE=$(type -path "${CROSS_COMPILE}mkimage")
-MKIMAGE=/opt/montavista/pro/bin/mkimage
-
+MKIMAGE=$(type -path "/opt/sdk3.3-genericfs-arm-mv5sft/bin/mkimage")
 if [ -z "${MKIMAGE}" ]; then
 	MKIMAGE=$(type -path mkimage)
 	if [ -z "${MKIMAGE}" ]; then

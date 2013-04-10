@@ -88,6 +88,14 @@
 
 #define DESC_SINCE_REFILL_LIMIT ((NUM_RX_DMA_DESCRIPTORS) / 4)
 
+#define timeout_BT 	  0x32		//Base Page timeout mechanism, 2009/9/29 0x32 solve linkup time is too long
+#define timeout_mechanism 0x32		//Next Page timeout mechanism
+
+#define DUT0 priv->mii.phy_id  //DUT0 PHY address
+
+#define Read_Reg(X,Y) priv->mii.mdio_read(priv->netdev, (int)X, (int)Y)
+#define Write_Reg(X,Y,Z) priv->mii.mdio_write(priv->netdev, (int)X, (int)Y, (int)Z)
+
 static const u32 MAC_BASE_OFFSET = 0x0000;
 static const u32 DMA_BASE_OFFSET = 0x1000;
 
@@ -143,6 +151,8 @@ static struct platform_driver plat_driver = {
 		.name	= "gmac",
 	},
 };
+
+static unsigned int linkstatus_retry_cnt = 0;
 
 #ifdef DUMP_REGS_ON_GMAC_UP
 static void dump_mac_regs(u32 macBase, u32 dmaBase)
@@ -549,14 +559,25 @@ static void refill_rx_ring(struct net_device *dev)
 #endif // !CONFIG_OXNAS_VERSION_0X800
 }
 
+#if 0
 static inline void set_phy_type_rgmii(void)
 {
-#ifndef CONFIG_OXNAS_VERSION_0X800
+
+	printk(KERN_ERR"set_phy_type_rgmii\n");
+#ifndef  CONFIG_OXNAS_VERSION_0X800
 	// Use sysctrl to switch MAC link lines into either (G)MII or RGMII mode
 	u32 reg_contents = readl(SYS_CTRL_GMAC_CTRL);
 	reg_contents |= (1UL << SYS_CTRL_GMAC_RGMII);
     writel(reg_contents, SYS_CTRL_RSTEN_SET_CTRL);
 #endif // !CONFIG_OXNAS_VERSION_0X800
+
+	printk(KERN_ERR"set_phy_type_rgmii done\n");
+}
+#endif
+
+static void Delay_ms(unsigned int delay)
+{
+	mdelay(delay);
 }
 
 static void initialise_phy(gmac_priv_t* priv)
@@ -573,8 +594,26 @@ static void initialise_phy(gmac_priv_t* priv)
 			}
 			break;
 		case PHY_TYPE_REALTEK_RTL8211BGR:
+		{
+			u32 phy_reg;
+
 			printk(KERN_INFO "%s: PHY is Realtek RTL8211BGR\n", priv->netdev->name);
-			set_phy_type_rgmii();
+			/* Assert CRS on transmit */
+			/* PHYCR: 0x10 */
+			phy_reg = priv->mii.mdio_read(priv->netdev, priv->mii.phy_id, 0x10);
+			/* bit11: Assert CRS on Transmit */
+			phy_reg |= 0x1 << 11;
+			priv->mii.mdio_write(priv->netdev, priv->mii.phy_id, 0x10, phy_reg);
+
+			/* Set LED Config */
+			/* LEDCR: 0x18 */
+			phy_reg = priv->mii.mdio_read(priv->netdev, priv->mii.phy_id, 0x18);
+			/* bit3 -> 1, bit0 -> 1 */
+			phy_reg |= ( 0x1 << 3 | 0x1 << 0);
+			priv->mii.mdio_write(priv->netdev, priv->mii.phy_id, 0x18, phy_reg);
+
+
+		}
 			break;
 		case PHY_TYPE_LSI_ET1011C:
 		case PHY_TYPE_LSI_ET1011C2:
@@ -751,6 +790,8 @@ static void watchdog_timer_action(unsigned long arg)
     int duplex_changed;
     int gigabit_changed;
     int pause_changed;
+	unsigned int reg1_temp,reg4_temp,reg6_temp,reg8_temp,reg9_temp;
+	unsigned int epoch,epoch_1;
 
 	// Interpret the PHY/link state.
 	if (priv->phy_force_negotiation || (state == WDS_RESETTING)) {
@@ -827,8 +868,159 @@ static void watchdog_timer_action(unsigned long arg)
                                     mac_reg_clear_mask(priv, MAC_CONFIG_REG, (1UL << MAC_CONFIG_DM_BIT));
         }
 	//Joseph Test Code End.2009/05/11*/
+
+	/*
+	 * Apply firmware auto-negotiation for IC+ IP1001,
+	 * because it has a bug when it apply hardware AN with 802.1AZ Ethernet Switch.
+	 * Such as Switch chip RTL8367 & RTL8370.
+	 */
+	if (priv->phy_type == PHY_TYPE_ICPLUS_IP1001)
+	{
+		if (ready)
+		{
+			// Write REG 4.15 as 0 , set next page to 0
+			reg4_temp = Read_Reg(DUT0,0x04) & 0x7FFF;
+			if ((reg4_temp | 0x8000) != 0)
+			{
+				reg4_temp &= 0x7FFF;
+				Write_Reg(DUT0,0x04,reg4_temp);
+			}
+		}
+		else
+		{
+			if (linkstatus_retry_cnt == 0)
+			{
+				//when DUT is unlink, reset DUT and restart AN.
+				Write_Reg(DUT0,0x00,0x8140);
+				Write_Reg(DUT0,0x00,0x1340);
+			}
+
+			//Check Giga ability at REG9[9:8]
+			reg9_temp = Read_Reg(DUT0,0x09);
+			if (((reg9_temp & 0x0100)>>8==1) || ((reg9_temp & 0x0200)>>9==1))
+			{ //DUT with Giga ability
+				if (linkstatus_retry_cnt == 0)
+				{
+					// Write REG 4.15 as 1
+					reg4_temp = Read_Reg(DUT0,0x04) | 0x8000;
+					Write_Reg(DUT0,0x04,reg4_temp);
+				}
+
+				//check DUT link status at REG1.2
+				reg1_temp = Read_Reg(DUT0,0x01);
+				//check Link Partner AN status REG6.0 and Next Page Received status REG6.1
+				reg6_temp = Read_Reg(DUT0,0x06);
+				if (((reg1_temp & 0x0004)>>2==0) && !(((reg6_temp & 0x0001)==1) && ((reg6_temp & 0x0002)>>1==1)) && (linkstatus_retry_cnt < timeout_BT))
+				{
+					reg1_temp = Read_Reg(DUT0,0x01);
+					reg6_temp = Read_Reg(DUT0,0x06);
+					//2009/9/29 solve linkup time is too long
+					if (!(((reg6_temp & 0x0002)>>1==0) && (((reg6_temp & 0x0008)>>3==1) || ((reg6_temp & 0x0001)==1))))
+					{
+						linkstatus_retry_cnt++;
+						goto restart_timer;
+					}
+				}
+				linkstatus_retry_cnt = 0;
+				if (((reg6_temp & 0x0001)==1) && ((reg6_temp & 0x0002)>>1==1))
+				{ //check Link Partner AN status REG6.0 and Next Page Received status REG6.1
+					if ((reg6_temp & 0x0008)>>3==1)
+					{
+						Write_Reg(DUT0,0x07,0xA001);
+						reg6_temp = Read_Reg(DUT0,0x06);
+						epoch=0;
+						while (!(((reg6_temp & 0x0008)>>3==0) || ((reg6_temp & 0x0001)==0)) && ((reg6_temp & 0x0002)>>1==0) && (epoch != timeout_mechanism))
+						{
+							reg6_temp = Read_Reg(DUT0,0x06);
+							//To do other task 10ms
+							Delay_ms(10);
+							epoch++;
+						}
+						if ((reg6_temp & 0x0002)>>1==1)
+						{
+							Write_Reg(DUT0,0x07,0xA001);
+							reg6_temp = Read_Reg(DUT0,0x06);
+							epoch=0;
+							while (!(((reg6_temp & 0x0008)>>3==0) || ((reg6_temp & 0x0001)==0)) && ((reg6_temp & 0x0002)>>1==0) && (epoch != timeout_mechanism))
+							{
+								reg6_temp = Read_Reg(DUT0,0x06);
+								//To do other task 10ms
+								Delay_ms(10);
+								epoch++;
+							}
+							if ((reg6_temp & 0x0002)>>1==1)
+							{
+								reg6_temp = Read_Reg(DUT0,0x06);
+								reg8_temp = Read_Reg(DUT0,0x08);
+								epoch=0;
+								while (!(((reg8_temp & 0x8000)>>15==0) || ((reg8_temp & 0x27FF)==0x2001)) && !(((reg6_temp & 0x0008)>>3==0) || ((reg6_temp & 0x0001)==0)) && (epoch != timeout_mechanism))
+								{
+									Write_Reg(DUT0,0x07,0xA001);
+									reg6_temp = Read_Reg(DUT0,0x06);
+									epoch_1=0;
+									while (!(((reg6_temp & 0x0008)>>3==0) || ((reg6_temp & 0x0001)==0)) && ((reg6_temp & 0x0002)>>1==0) && (epoch_1 != timeout_mechanism))
+									{
+										reg1_temp = Read_Reg(DUT0,0x01);
+										reg6_temp = Read_Reg(DUT0,0x06);
+										//To do other task 10ms
+										Delay_ms(10);
+										epoch_1++;
+									}
+									reg8_temp = Read_Reg(DUT0,0x08);
+									epoch++;
+								}
+								if (((reg8_temp & 0x8000)>>15==0) || ((reg8_temp & 0x27FF)==0x2001))
+								{
+									Write_Reg(DUT0,0x07,0x2001);
+									reg1_temp = Read_Reg(DUT0,0x01);
+									reg6_temp = Read_Reg(DUT0,0x06);
+									epoch=0;
+									while (!(((reg6_temp & 0x0008)>>3==0) || ((reg6_temp & 0x0001)==0)) && ((reg1_temp & 0x0004)>>2==0) && (epoch != timeout_mechanism))
+									{
+										reg1_temp = Read_Reg(DUT0,0x01);
+										reg6_temp = Read_Reg(DUT0,0x06);
+										//To do other task 10ms
+										Delay_ms(10);
+										epoch++;
+									}
+								}
+							}
+						}
+					}
+					else
+					{ //Link Partner AN enable and NP disable
+						reg1_temp = Read_Reg(DUT0,0x01);
+						reg6_temp = Read_Reg(DUT0,0x06);
+						while (!(((reg6_temp & 0x0008)>>3==1) || ((reg6_temp & 0x0001)==0)) && ((reg1_temp & 0x0004)>>2==0))
+						{
+							reg1_temp = Read_Reg(DUT0,0x01);
+							reg6_temp = Read_Reg(DUT0,0x06);
+							//To do other task 300ms
+							Delay_ms(300);
+						}
+					}
+				}
+			}
+			else
+			{ //without Giga ability
+				// Write REG 4.15 as 0
+				reg4_temp = Read_Reg(DUT0,0x04) & 0x7FFF;
+				Write_Reg(DUT0,0x04,reg4_temp);
+
+				//check DUT link status at REG1.2
+				reg1_temp = Read_Reg(DUT0,0x01);
+				while ((reg1_temp & 0x0004)>>2==0)
+				{
+					reg1_temp = Read_Reg(DUT0,0x01);
+					// To do other task 300ms
+					Delay_ms(300);
+				}
+			}//end of DUT0
+		}
+	}
 #endif // !ARMULATING
 
+restart_timer:
     // Re-trigger the timer, unless some other thread has requested it be stopped
     if (!priv->watchdog_timer_shutdown) {
         // Restart the timer
@@ -3578,6 +3770,7 @@ static int probe(
 
 	// Setup the PHY
 	initialise_phy(priv);
+	printk(KERN_ERR"phy init done\n");
 
 	// Find out what modes the PHY supports
 	priv->ethtool_cmd.supported = get_phy_capabilies(priv);
@@ -3594,9 +3787,9 @@ static int probe(
     }
 
     // Record details about the hardware we found
-    printk(KERN_NOTICE "%s: GMAC ver = %u, vendor ver = %u at 0x%lx, IRQ %d\n", netdev->name, synopsis_version, vendor_version, netdev->base_addr, netdev->irq);
+    printk(KERN_ERR "%s: GMAC ver = %u, vendor ver = %u at 0x%lx, IRQ %d\n", netdev->name, synopsis_version, vendor_version, netdev->base_addr, netdev->irq);
 #ifndef ARMULATING
-    printk(KERN_NOTICE "%s: Found PHY at address %u, type 0x%08x -> %s\n", priv->netdev->name, priv->phy_addr, priv->phy_type, (priv->ethtool_cmd.supported & SUPPORTED_1000baseT_Full) ? "10/100/1000" : "10/100");
+    printk(KERN_ERR "%s: Found PHY at address %u, type 0x%08x -> %s\n", priv->netdev->name, priv->phy_addr, priv->phy_type, (priv->ethtool_cmd.supported & SUPPORTED_1000baseT_Full) ? "10/100/1000" : "10/100");
 #endif // !ARMULATING
     printk(KERN_NOTICE "%s: Ethernet addr: ", priv->netdev->name);
     for (i = 0; i < 5; i++) {
@@ -3752,6 +3945,9 @@ static int __init gmac_module_init(void)
 			printk(KERN_WARNING "gmac_module_init() Failed to register platform driver instance %d\n", i);
 		}
 	}
+
+
+	printk(KERN_ERR"Init phy sucessfully\n");
 
 	if (!gmac_found_count) {
 		platform_driver_unregister(&plat_driver);

@@ -1188,9 +1188,17 @@ void usb_disconnect(struct usb_device **pdev)
 	printk("In %s, and number is %d .....\n", __func__, atomic_read(&usb_number));
 
 	turn_off_led(LED3); //Turn off LED
+
+#ifdef CONFIG_ZYXEL_MODEL_NSA221
+	/* In NSA221, the NAND flash was as  usb device */
+	if(atomic_read(&usb_number) <= 1) {
+		atomic_set(&usb_number, 1);
+	}
+#else
 	if(atomic_read(&usb_number) <= 0) {
 		atomic_set(&usb_number, 0);
 	}
+#endif
 	else {
 		turn_on_led(LED3, GREEN);
 	}
@@ -2450,11 +2458,17 @@ fail:
 		}
 		//increase the usb number
 		if(atomic_read(&usb_device_id) < devnum) {
-			turn_off_led(LED3);
-			turn_on_led(LED3, GREEN);
 			atomic_set(&usb_device_id, devnum);
 			atomic_set(&usb_badblock_idf, 0);
 			atomic_inc(&usb_number);
+#ifdef CONFIG_ZYXEL_MODEL_NSA221
+			if(atomic_read(&usb_number) > 1) {
+#else
+			if(atomic_read(&usb_number) > 0) {
+#endif
+				turn_off_led(LED3);
+				turn_on_led(LED3, GREEN);
+			}
 		}
 	}
 	printk("In %s, and number is %d, retry %d, port %d .....\n", __func__, atomic_read(&usb_number), retry_counter, port1);

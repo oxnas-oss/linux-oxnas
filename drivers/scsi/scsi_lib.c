@@ -86,9 +86,19 @@ extern void turn_off_led(unsigned long led_num);
 extern atomic_t sata_badblock_idf;
 extern atomic_t esata_badblock_idf;
 
+//Indicate the status of HD (Link up or down), in drivers/ata/libata-core.c
+extern atomic_t sata_hd_islinked;
+extern atomic_t esata_hd_islinked;
+
 //Indicate the color of LED, in drivers/scsi/scsi.c
 #define LED_DEFAULT		-1
 extern atomic_t hdled_color;
+
+//LED work queue, in drivers/ata/libata-core.c
+extern struct workqueue_struct *led_workqueue;
+extern void write_sata_log(struct work_struct *in);
+extern void write_esata_log(struct work_struct *in);
+static DECLARE_WORK(LED_LOGMSG, NULL);
 
 //Control the blinking speed for usb
 #define USB_BLINKING_SET	5
@@ -983,29 +993,35 @@ void scsi_io_completion(struct scsi_cmnd *cmd, unsigned int good_bytes)
 	//Turn on LED
 	if(strcmp(cmd->device->sdev_gendev.bus_id, "0:0:0:0") == 0) {
 		//SATA
-		if(atomic_read(&sata_badblock_idf) == 0) {
+		if(atomic_read(&sata_badblock_idf) == 0 && atomic_read(&sata_hd_islinked) == 1) {
 			turn_on_led(LED0, ledColor);
 			isSATA = 1;
 		}
 	}
 	else if(strcmp(cmd->device->sdev_gendev.bus_id, "1:0:0:0") == 0) {
 		//eSATA
-		if(atomic_read(&esata_badblock_idf) == 0) {
+		if(atomic_read(&esata_badblock_idf) == 0 && atomic_read(&esata_hd_islinked) == 1) {
 			turn_on_led(LED2, GREEN);
 			isSATA = 2;
 		}
 	}
 	else {
-		//USB
-		if(atomic_read(&usb_blinking_times) % USB_BLINKING_SET == 0 && atomic_read(&usb_badblock_idf) == 0) {
-			turn_on_led(LED3, GREEN);
+#ifdef CONFIG_ZYXEL_MODEL_NSA221
+		if(strncmp(cmd->device->model, "USB DISK", sizeof("USB DISK") -1) != 0 &&
+			strncmp(cmd->device->model, "null", sizeof("null") -1) != 0)
+#endif
+		{
+			//USB
+			if(atomic_read(&usb_blinking_times) % USB_BLINKING_SET == 0 && atomic_read(&usb_badblock_idf) == 0) {
+				turn_on_led(LED3, GREEN);
+			}
+			//Update usb_blinking_times
+			if(atomic_read(&usb_blinking_times) >= USB_BLINKING_RESET) {
+				atomic_set(&usb_blinking_times, 0);
+			}
+			atomic_inc(&usb_blinking_times);
+			isSATA = 3;
 		}
-		//Update usb_blinking_times
-		if(atomic_read(&usb_blinking_times) >= USB_BLINKING_RESET) {
-			atomic_set(&usb_blinking_times, 0);
-		}
-		atomic_inc(&usb_blinking_times);
-		isSATA = 3;
 	}
 
 	scsi_release_buffers(cmd);
@@ -1052,23 +1068,6 @@ void scsi_io_completion(struct scsi_cmnd *cmd, unsigned int good_bytes)
 	 * (result != 0), retry the rest.
 	 */
 	if (scsi_end_request(cmd, 1, good_bytes, result == 0) == NULL) {
-		if(result != 0) {
-			//Turn off LED, control the be havior of LED for hot-plug
-			switch(isSATA) {
-				case 1:
-					turn_off_led(LED0);
-					turn_on_led(LED0, RED);
-					break;
-				case 2:
-					turn_off_led(LED2);
-					break;
-				case 3:
-					break;
-				default:
-					break;
-			}
-		}
-
 		return;
 	}
 
@@ -1175,11 +1174,17 @@ void scsi_io_completion(struct scsi_cmnd *cmd, unsigned int good_bytes)
 					atomic_set(&sata_badblock_idf, 1); //set it as badblock
 					turn_off_led(LED0);
 					turn_on_led(LED0, RED);
+					PREPARE_WORK(&LED_LOGMSG, write_sata_log);
+					queue_work(led_workqueue, &LED_LOGMSG);
+					printk("Turn on LED Red, %s %d\n", __FUNCTION__, __LINE__);
 					break;
 				case 2:
 					atomic_set(&esata_badblock_idf, 1); //set it as badblock
 					turn_off_led(LED2);
 					turn_on_led(LED2, RED);
+					PREPARE_WORK(&LED_LOGMSG, write_esata_log);
+					queue_work(led_workqueue, &LED_LOGMSG);
+					printk("Turn on LED Red, %s %d\n", __FUNCTION__, __LINE__);
 					break;
 				case 3:
 					if(atomic_read(&usb_badblock_idf) == 0) {
@@ -1219,20 +1224,26 @@ static int scsi_init_io(struct scsi_cmnd *cmd)
 	//Turn off LED
 	if(strcmp(cmd->device->sdev_gendev.bus_id, "0:0:0:0") == 0) {
 		//SATA
-		if(atomic_read(&sata_badblock_idf) == 0) {
+		if(atomic_read(&sata_badblock_idf) == 0 && atomic_read(&sata_hd_islinked) == 1) {
 			turn_off_led(LED0);
 		}
 	}
 	else if(strcmp(cmd->device->sdev_gendev.bus_id, "1:0:0:0") == 0) {
 		//eSATA
-		if(atomic_read(&esata_badblock_idf) == 0) {
+		if(atomic_read(&esata_badblock_idf) == 0 && atomic_read(&esata_hd_islinked) == 1) {
 			turn_off_led(LED2);
 		}
 	}
 	else {
-		//USB
-		if(atomic_read(&usb_blinking_times) % USB_BLINKING_SET == 0 && atomic_read(&usb_badblock_idf) == 0) {
-			turn_off_led(LED3);
+#ifdef CONFIG_ZYXEL_MODEL_NSA221
+		if(strncmp(cmd->device->model, "USB DISK", sizeof("USB DISK") -1) != 0 &&
+			strncmp(cmd->device->model, "null", sizeof("null") -1) != 0)
+#endif
+		{
+			//USB
+			if(atomic_read(&usb_blinking_times) % USB_BLINKING_SET == 0 && atomic_read(&usb_badblock_idf) == 0) {
+				turn_off_led(LED3);
+			}
 		}
 	}
 

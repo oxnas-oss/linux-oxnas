@@ -3062,9 +3062,6 @@ int ata_scsi_queuecmd(struct scsi_cmnd *cmd, void (*done)(struct scsi_cmnd *))
 		{
 			if(sdisk_gendev[i] == sdev)
 			{
-			//	printk(KERN_ERR"HD%d  --> cmd = %x, counter = %d", i, cmd->cmnd[0],
-			//		atomic_read(&SATA_State_Counter[i]));
-
 				atomic_set(&SATA_hd_read_write[i], 1);
 				atomic_set(&SATA_State_Counter[i], 0);
 			}
