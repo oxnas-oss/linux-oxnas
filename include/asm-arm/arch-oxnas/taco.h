@@ -49,7 +49,7 @@ extern int GetFanRPM(void);
 #define TEMP_TACHO_PULLUP_CTRL_VALUE 		0x20000000
 
 // 256kHz with 50MHz pclk (reset value)
-#define PWM_CORE_CLK_DIVIDER_VALUE      (28)
+#define PWM_CORE_CLK_DIVIDER_VALUE      (7811)
 
 /* Registers ---------------------------------------------------------------- */
 /* -------------------------------------------------------------------------- */

@@ -81,6 +81,9 @@ static unsigned int ata_dev_set_feature(struct ata_device *dev,
 static void ata_dev_xfermask(struct ata_device *dev);
 static unsigned long ata_dev_blacklisted(const struct ata_device *dev);
 
+struct workqueue_struct *led_workqueue;
+static DECLARE_WORK(LED_LOGMSG, NULL);
+
 // LED , shall be same with sysapps/LED_CTRL/led.h
 enum {
         LED0,   // HD
@@ -103,6 +106,10 @@ extern void turn_off_led(unsigned long led_num);
 //Indicate the status of badblock
 atomic_t sata_badblock_idf = ATOMIC_INIT(0);
 atomic_t esata_badblock_idf = ATOMIC_INIT(0);
+
+//Indicate the status of HD (Link up or down)
+atomic_t sata_hd_islinked = ATOMIC_INIT(0);
+atomic_t esata_hd_islinked = ATOMIC_INIT(0);
 
 unsigned int ata_print_id = 1;
 static struct workqueue_struct *ata_wq;
@@ -146,6 +153,21 @@ MODULE_DESCRIPTION("Library module for ATA devices");
 MODULE_LICENSE("GPL");
 MODULE_VERSION(DRV_VERSION);
 
+/**
+ * write_sata_log - Write log message to zylog when SATA LED turns on
+ */
+void write_sata_log(struct work_struct *in)
+{
+	call_usermodehelper("/usr/local/scsi_error/disk1_error.sh", NULL, NULL, 0);
+}
+
+/**
+ * write_esata_log - Write log message to zylog when eSATA LED turns on
+ */
+void write_esata_log(struct work_struct *in)
+{
+	call_usermodehelper("/usr/local/scsi_error/disk2_error.sh", NULL, NULL, 0);
+}
 
 /**
  *	ata_tf_to_fis - Convert ATA taskfile to SATA FIS structure
@@ -2012,8 +2034,9 @@ int ata_dev_read_id(struct ata_device *dev, unsigned int *p_class,
 	 */
 	tf.flags |= ATA_TFLAG_POLLING;
 
+	printk(KERN_ERR "%s(%d): Give 100ms while getting HW ID\n",__FUNCTION__,__LINE__);
 	err_mask = ata_exec_internal(dev, &tf, NULL, DMA_FROM_DEVICE,
-				     id, sizeof(id[0]) * ATA_ID_WORDS, 0);
+				     id, sizeof(id[0]) * ATA_ID_WORDS, 100);
 	if (err_mask) {
 		if (err_mask & AC_ERR_NODEV_HINT) {
 			ata_dev_printk(dev, KERN_DEBUG,
@@ -2676,15 +2699,13 @@ void sata_print_link_status(struct ata_link *link)
 	u32 sstatus, scontrol, tmp;
 	int isSATA = -1; // -1: default value, 1: SATA, 2: eSATA
 
-	//Turn off LED
+	//Set SATA or eSATA
 	if(strcmp(link->ap->dev->bus_id, "oxnassata.0") == 0) {
 		//SATA
-		turn_off_led(LED0);
 		isSATA = 1;
 	}
 	else if(strcmp(link->ap->dev->bus_id, "oxnassata.1") == 0) {
 		//eSATA
-		turn_off_led(LED2);
 		isSATA = 2;
 	}
 
@@ -2702,12 +2723,22 @@ void sata_print_link_status(struct ata_link *link)
 		//Turn on LED
 		switch(isSATA) {
 			case 1:
-				atomic_set(&sata_badblock_idf, 0); //set it as non-badblock as default
-				turn_on_led(LED0, GREEN);
+				//SATA
+				if(atomic_read(&sata_hd_islinked) == 0) {
+					atomic_set(&sata_badblock_idf, 0); //set it as non-badblock as default
+					atomic_set(&sata_hd_islinked, 1); //set it links up
+					turn_off_led(LED0);
+					turn_on_led(LED0, GREEN);
+				}
 				break;
 			case 2:
-				atomic_set(&esata_badblock_idf, 0); //set it as non-badblock as default
-				turn_on_led(LED2, GREEN);
+				//eSATA
+				if(atomic_read(&esata_hd_islinked) == 0) {
+					atomic_set(&esata_badblock_idf, 0); //set it as non-badblock as default
+					atomic_set(&esata_hd_islinked, 1); //set it links up
+					turn_off_led(LED2);
+					turn_on_led(LED2, GREEN);
+				}
 				break;
 			default:
 				break;
@@ -2717,8 +2748,31 @@ void sata_print_link_status(struct ata_link *link)
 				"SATA link down (SStatus %X SControl %X)\n",
 				sstatus, scontrol);
 		//Turn on LED when SATA is removed
-		if(isSATA == 1) {
-			turn_on_led(LED0, RED);
+		switch(isSATA) {
+			case 1:
+				if(atomic_read(&sata_hd_islinked) == 1) {
+					turn_off_led(LED0);
+					turn_on_led(LED0, RED);
+					atomic_set(&sata_hd_islinked, 0); //set it links down
+					PREPARE_WORK(&LED_LOGMSG, write_sata_log);
+					queue_work(led_workqueue, &LED_LOGMSG);
+					printk("Turn on LED Red, %s %d\n", __FUNCTION__, __LINE__);
+				}
+				break;
+			case 2:
+				if(atomic_read(&esata_hd_islinked) == 1) {
+					turn_off_led(LED2);
+#ifdef CONFIG_ZYXEL_MODEL_NSA221
+					turn_on_led(LED2, RED);
+					PREPARE_WORK(&LED_LOGMSG, write_esata_log);
+					queue_work(led_workqueue, &LED_LOGMSG);
+					printk("Turn on LED Red, %s %d\n", __FUNCTION__, __LINE__);
+#endif
+					atomic_set(&esata_hd_islinked, 0); //set it links down
+				}
+				break;
+			default:
+				break;
 		}
 	}
 }
@@ -7734,6 +7788,13 @@ static int __init ata_init(void)
 		return -ENOMEM;
 	}
 
+	led_workqueue = create_singlethread_workqueue("harddrive_led");
+	if (!led_workqueue) {
+		destroy_workqueue(ata_wq);
+		destroy_workqueue(ata_aux_wq);
+		return -ENOMEM;
+	}
+
 	printk(KERN_DEBUG "libata version " DRV_VERSION " loaded.\n");
 	return 0;
 }
@@ -7743,6 +7804,7 @@ static void __exit ata_exit(void)
     VPRINTK("\n");
 	destroy_workqueue(ata_wq);
 	destroy_workqueue(ata_aux_wq);
+	destroy_workqueue(led_workqueue);
 }
 
 subsys_initcall(ata_init);

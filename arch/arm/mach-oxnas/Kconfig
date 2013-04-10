@@ -15,13 +15,6 @@ config OXNAS_CORE_CLK
 	help
 		Maximum reliable frequency 175MHz
 
-config OXNAS_GPIO_CTRL
-	tristate "GPIO control for Nas"
-	default n
-	---help---
-	Enable and control for each gpio
-
-
 config OXNAS_CORE_BUS_CLK_DIV
 	int "Integrator core module bus clock divider"
 	depends on ARCH_OXNAS_FPGA
@@ -64,6 +57,37 @@ config OXNAS_VERSION_0X850
 	help
 	  Support for the 0X850 SoC
 endchoice
+
+choice
+	prompt "ZyXEL NAS Model type"
+	default ZYXEL_MODEL_NSA210
+
+config ZYXEL_MODEL_NSA210
+	bool "NSA210"
+	select ARM_AMBA
+	help
+	  Support for the ZyXEL NSA210
+
+config ZYXEL_MODEL_NSA221
+	bool "NSA221"
+	select ARM_AMBA
+	help
+	  Support for the ZyXEL NSA221
+endchoice
+
+config ZYXEL_GPIO_CTRL
+	tristate "GPIO control for ZyXEL NAS"
+	default n
+	---help---
+	Enable and control for each gpio
+
+
+config ZYXEL_HW_TEST
+	tristate "Hw Test in ZyXEL NAS"
+	default n
+	---help---
+	Enable and control for each gpio
+
 
 config ARCH_OXNAS_UART1
 	bool "Support UART1"

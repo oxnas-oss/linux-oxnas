@@ -141,7 +141,7 @@ static int ox800_aeslrw_gencrypt(  u8  encrypt,
             printk("rx not empty after abort toggle");
 
         /* check to see if the destination buffer is the same as the source */
-        same_buffer = (in->page == out->page);
+        same_buffer = !((sg_page(in) - sg_page(out)) << PAGE_SHIFT);
 
         /* map transfers */
         if (same_buffer) {

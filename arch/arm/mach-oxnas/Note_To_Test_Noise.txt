@@ -1,0 +1,9 @@
+1. Change kernel config to CONFIG_TACHO_THERM_AND_FAN=m
+2. build kernel and build ras then upload to your NSA
+3. use test kernel module using insmod to insert different type of module via console (or telnet)
+  thermAndFan_normal.ko : Normal behavior
+  thermAndFan_sim_high10.ko : Set measure of temperature to 10 (as high temperature) which cause PWM to be 255
+  thermAndFan_sim_high30.ko : Set measure of temperature to 10 (as high temperature) which cause PWM to be 225
+  thermAndFan_sim_low.ko : Set measure of temperature to 110 (as low temperature) which cause PWM to be 0
+  thermAndFan_simulate.ko : A loop of changing measure of temperature. Use this to know the curve of algorithm.
+4. After each insmod, use rmmod thermAndFan to remove the kernel module via console (or telnet)

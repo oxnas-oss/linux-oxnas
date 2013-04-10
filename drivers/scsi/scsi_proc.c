@@ -3,13 +3,13 @@
  *
  * The functions in this file provide an interface between
  * the PROC file system and the SCSI device drivers
- * It is mainly used for debugging, statistics and to pass 
+ * It is mainly used for debugging, statistics and to pass
  * information directly to the lowlevel driver.
  *
- * (c) 1995 Michael Neuffer neuffer@goofy.zdv.uni-mainz.de 
+ * (c) 1995 Michael Neuffer neuffer@goofy.zdv.uni-mainz.de
  * Version: 0.99.8   last change: 95/09/13
- * 
- * generic command parser provided by: 
+ *
+ * generic command parser provided by:
  * Andreas Heilwagen <crashcar@informatik.uni-koblenz.de>
  *
  * generic_proc_info() support of xxxx_info() by:
@@ -66,7 +66,7 @@ static int proc_scsi_write_proc(struct file *file, const char __user *buf,
 	ssize_t ret = -ENOMEM;
 	char *page;
 	char *start;
-    
+
 	if (count > PROC_BLOCK_SIZE)
 		return -EOVERFLOW;
 
@@ -129,7 +129,7 @@ void scsi_proc_host_add(struct Scsi_Host *shost)
 		       "%s\n", __FUNCTION__, shost->host_no,
 		       sht->proc_name);
 		return;
-	} 
+	}
 
 	p->write_proc = proc_scsi_write_proc;
 	p->owner = sht->module;
@@ -282,7 +282,7 @@ static ssize_t proc_scsi_write(struct file *file, const char __user *buf,
 	}
 
 	/*
-	 * convert success returns so that we return the 
+	 * convert success returns so that we return the
 	 * number of bytes consumed.
 	 */
 	if (!err)
@@ -320,28 +320,37 @@ static const struct file_operations proc_scsi_operations = {
 static int proc_print_scsidevice_zyxel(struct device *dev, void *data)
 {
 	struct scsi_device *sdev = to_scsi_device(dev);
-	struct scsi_disk *sdkp = dev_get_drvdata(dev);
-	struct scsi_cd *cd = dev_get_drvdata(dev);
 	struct seq_file *s = data;
 	int fakesg;
 	int i;
 
 	///dev/sg0  0 0 0 0  0  /dev/sda  ATA       ST3160812AS       3.AA
 	fakesg=(sdev->host->host_no)+(sdev->channel)+(sdev->id)+(sdev->lun);
-	if ( (sdkp)&&(sdkp->disk)&&(sdkp->disk->disk_name)&&(!strncmp(sdkp->disk->disk_name, "sd", 2)) ) {
-		seq_printf(s,
-			"/dev/sg%d  %d %d %d %d  %d  /dev/%s  ", fakesg,
-			sdev->host->host_no, sdev->channel, sdev->id, sdev->lun,
-			fakesg, sdkp->disk->disk_name);
-	} else if ( (cd)&&(cd->disk)&&(cd->disk->disk_name)&&(!strncmp(cd->disk->disk_name, "sr", 2)) ) {
-		seq_printf(s,
-			"/dev/sg%d  %d %d %d %d  %d  /dev/%s  ", fakesg,
-			sdev->host->host_no, sdev->channel, sdev->id, sdev->lun,
-			fakesg, cd->disk->disk_name);
+
+	if ( !strncmp(scsi_device_type(sdev->type),"CD-ROM",6) ) {
+		struct scsi_cd *cd = dev_get_drvdata(dev);
+		if ( (cd)&&(cd->disk)&&(cd->disk->disk_name)&&(cd->disk->private_data)&&(cd->disk->major)&&(!strncmp(cd->disk->disk_name, "sr", 2)) ) {
+			seq_printf(s,
+				"/dev/sg%d  %d %d %d %d  %d  /dev/%s  ", fakesg,
+				sdev->host->host_no, sdev->channel, sdev->id, sdev->lun,
+				fakesg, cd->disk->disk_name);
+		} else {
+			printk(KERN_ERR "%s:%d %d %d %d /dev/???",
+				__FUNCTION__, sdev->host->host_no, sdev->channel, sdev->id, sdev->lun);
+			return 0;
+		}
 	} else {
-		printk(KERN_ERR "%s:%d %d %d %d /dev/???",
-			__FUNCTION__, sdev->host->host_no, sdev->channel, sdev->id, sdev->lun);
-		return 0;
+		struct scsi_disk *sdkp = dev_get_drvdata(dev);
+		if ( (sdkp)&&(sdkp->disk)&&(sdkp->disk->disk_name)&&(!strncmp(sdkp->disk->disk_name, "sd", 2)) ) {
+			seq_printf(s,
+				"/dev/sg%d  %d %d %d %d  %d  /dev/%s  ", fakesg,
+				sdev->host->host_no, sdev->channel, sdev->id, sdev->lun,
+				fakesg, sdkp->disk->disk_name);
+		} else {
+			printk(KERN_ERR "%s:%d %d %d %d /dev/???",
+				__FUNCTION__, sdev->host->host_no, sdev->channel, sdev->id, sdev->lun);
+			return 0;
+		}
 	}
 	for (i = 0; i < 8; i++) {
 		if (sdev->vendor[i] >= 0x20)

@@ -115,7 +115,7 @@ static dma_cookie_t oxnas_adma_submit_tx(struct dma_async_tx_descriptor *tx)
 		/* Queue the new descriptor to be started when current transfer completes */
 	} else {
 		/* Start the new transfer */
-		oxnas_dma_set_callback(channel->oxnas_channel, oxnas_dma_callback, desc)
+		oxnas_dma_set_callback(channel->oxnas_channel, oxnas_dma_callback, desc);
 		oxnas_dma_start(channel->oxnas_channel);
 	}
 
