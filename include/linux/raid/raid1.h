@@ -62,6 +62,10 @@ struct r1_private_data_s {
 
 	mempool_t *r1bio_pool;
 	mempool_t *r1buf_pool;
+
+    /** This contains flags in the correct format so that they can be ORed over
+    * the ox800 sata core hardware RAID register to set the correct RAID mode */
+    u32 hw_raid1_settings;
 };
 
 typedef struct r1_private_data_s conf_t;

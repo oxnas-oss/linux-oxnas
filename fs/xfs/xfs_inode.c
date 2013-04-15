@@ -1145,6 +1145,15 @@ xfs_ialloc(
 	if ( (prid != 0) && (ip->i_d.di_version == XFS_DINODE_VERSION_1))
 		xfs_bump_ino_vers2(tp, ip);
 
+/* OXNAS modification to propagate SUID down directory hierarchy */
+	if (XFS_INHERIT_UID(pip, vp->v_vfsp)) {
+		ip->i_d.di_uid = pip->i_d.di_uid;
+		if ((pip->i_d.di_mode & S_ISGID) && (mode & S_IFMT) == S_IFDIR) {
+			ip->i_d.di_mode |= S_ISUID;
+		}
+	}
+/* End of OXNAS modification */
+
 	if (XFS_INHERIT_GID(pip, vp->v_vfsp)) {
 		ip->i_d.di_gid = pip->i_d.di_gid;
 		if ((pip->i_d.di_mode & S_ISGID) && (mode & S_IFMT) == S_IFDIR) {

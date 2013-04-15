@@ -83,6 +83,7 @@
 
 	.text
 
+.section ".text.__arch_copy_from_user"
 ENTRY(__arch_copy_from_user)
 
 #include "copy_template.S"

@@ -267,6 +267,7 @@
 
 #include <asm/uaccess.h>
 #include <asm/ioctls.h>
+#include <linux/pagemap.h>
 
 int sysctl_tcp_fin_timeout = TCP_FIN_TIMEOUT;
 
@@ -637,6 +638,50 @@ ssize_t tcp_sendpage(struct socket *sock, struct page *page, int offset,
 	release_sock(sk);
 	return res;
 }
+
+ssize_t tcp_sendpages(struct socket *sock, struct page **page, int offset,
+		     size_t size, int flags)
+{
+	ssize_t res;
+	struct sock *sk = sock->sk;
+
+#define TCP_ZC_CSUM_FLAGS (NETIF_F_IP_CSUM | NETIF_F_NO_CSUM | NETIF_F_HW_CSUM)
+
+	if (!(sk->sk_route_caps & NETIF_F_SG) ||
+	    !(sk->sk_route_caps & TCP_ZC_CSUM_FLAGS)) {
+        // Iterate through each page
+        ssize_t ret = 0;
+
+        while (size) {
+            unsigned long psize = PAGE_CACHE_SIZE - offset;
+            struct page *page_it;
+
+            psize = PAGE_CACHE_SIZE - offset;
+            if (size <= psize) {
+                psize = size;
+            }
+            page_it = *page;
+            ret += sock_no_sendpage(sock, page_it, offset, psize, flags);
+            size -= psize;
+            page++;
+            offset += psize;
+            offset &= (PAGE_CACHE_SIZE - 1);
+        }
+		return ret;
+    }
+
+#undef TCP_ZC_CSUM_FLAGS
+
+	lock_sock(sk);
+	TCP_CHECK_TIMER(sk);
+	res = do_tcp_sendpages(sk, page, offset, size, flags);
+	TCP_CHECK_TIMER(sk);
+
+	release_sock(sk);
+	return res;
+}
+
+
 
 #define TCP_PAGE(sk)	(sk->sk_sndmsg_page)
 #define TCP_OFF(sk)	(sk->sk_sndmsg_off)

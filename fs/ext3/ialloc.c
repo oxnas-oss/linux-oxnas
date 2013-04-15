@@ -544,7 +544,15 @@ got:
 		percpu_counter_inc(&sbi->s_dirs_counter);
 	sb->s_dirt = 1;
 
+    /* OXNAS modification to propagate SUID down directory hierarchy */
+	if (dir->i_mode & S_ISUID) {
+		inode->i_uid = dir->i_uid;
+		if (S_ISDIR(mode))
+			mode |= S_ISUID;
+	} else
 	inode->i_uid = current->fsuid;
+    /* End of OXNAS modification */
+
 	if (test_opt (sb, GRPID))
 		inode->i_gid = dir->i_gid;
 	else if (dir->i_mode & S_ISGID) {

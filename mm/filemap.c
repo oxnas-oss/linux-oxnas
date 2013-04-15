@@ -800,6 +800,9 @@ void do_generic_mapping_read(struct address_space *mapping,
 			     read_descriptor_t *desc,
 			     read_actor_t actor)
 {
+
+#define MAX_QUEUED_PAGES (65536/PAGE_CACHE_SIZE)
+
 	struct inode *inode = mapping->host;
 	unsigned long index;
 	unsigned long end_index;
@@ -810,7 +813,17 @@ void do_generic_mapping_read(struct address_space *mapping,
 	loff_t isize;
 	struct page *cached_page;
 	int error;
+	unsigned long transfer_count;
+	unsigned long start_desc_count;
+
+	unsigned long start_index;
+	unsigned long loop_offset;
+
 	struct file_ra_state ra = *_ra;
+	// Create the page table
+	struct page* page_table[MAX_QUEUED_PAGES];
+	unsigned long index_count;
+	unsigned long desc_remaining;
 
 	cached_page = NULL;
 	index = *ppos >> PAGE_CACHE_SHIFT;
@@ -818,6 +831,12 @@ void do_generic_mapping_read(struct address_space *mapping,
 	prev_index = ra.prev_page;
 	last_index = (*ppos + desc->count + PAGE_CACHE_SIZE-1) >> PAGE_CACHE_SHIFT;
 	offset = *ppos & ~PAGE_CACHE_MASK;
+
+	start_index = index;
+	index_count = 0;
+	transfer_count = 0;
+	desc_remaining = desc->count;
+	loop_offset = offset;
 
 	isize = i_size_read(inode);
 	if (!isize)
@@ -834,11 +853,12 @@ void do_generic_mapping_read(struct address_space *mapping,
 			if (index > end_index)
 				goto out;
 			nr = ((isize - 1) & ~PAGE_CACHE_MASK) + 1;
-			if (nr <= offset) {
+			if (nr  <= loop_offset) {
 				goto out;
 			}
 		}
-		nr = nr - offset;
+
+		nr = nr - loop_offset;
 
 		cond_resched();
 		if (index == next_index)
@@ -870,25 +890,79 @@ page_ok:
 			mark_page_accessed(page);
 		prev_index = index;
 
+
 		/*
 		 * Ok, we have the page, and it's up-to-date, so
-		 * now we can copy it to user space...
-		 *
-		 * The actor routine returns how many bytes were actually used..
-		 * NOTE! This may not be the same as how much of a user buffer
-		 * we filled up (we may be padding etc), so we can only update
-		 * "pos" here (the actor routine has to update the user buffer
-		 * pointers and the remaining count).
+		 * now we can mark it for copy it to user space...
 		 */
-		ret = actor(desc, page, offset, nr);
-		offset += ret;
-		index += offset >> PAGE_CACHE_SHIFT;
-		offset &= ~PAGE_CACHE_MASK;
+          page_table[index_count] = page;
 
-		page_cache_release(page);
-		if (ret == nr && desc->count)
-			continue;
-		goto out;
+          index_count++;
+          transfer_count += nr;
+
+          if (transfer_count >= desc->count) {
+              loop_offset += desc_remaining;
+              index += loop_offset >> PAGE_CACHE_SHIFT;
+              loop_offset &= ~PAGE_CACHE_MASK;
+              desc_remaining = 0;
+          } else {
+              loop_offset = 0;
+              index++;
+              desc_remaining -= nr;
+          }
+
+
+          /**
+           *  Do we have enough data in the pages so far, or enough
+           *  pages left, to satisfy the count specified in the descriptor ?
+           */
+          if ((transfer_count < desc->count) && (index <= end_index) && (index_count < MAX_QUEUED_PAGES)) {
+              continue;
+          }
+
+      //  Page table is now constructed. Let's send them out.
+
+      /*
+       * The actor routine returns how many bytes were actually used..
+       * NOTE! This may not be the same as how much of a user buffer
+       * we filled up (we may be padding etc), so we can only update
+       * "pos" here (the actor routine has to update the user buffer
+       * pointers and the remaining count).
+       */
+
+      start_desc_count = desc->count;
+      ret = actor(desc, page_table, offset, transfer_count);
+
+      /*
+       * Some debug to test if our assumptions about the transfer length are correct
+       * We shouldn't see this message under normal execution
+       */
+
+      if ((start_desc_count != ret) && (transfer_count != ret)) {
+          printk("desc_count %d, ret %d, transfer_count %d\n",(int)start_desc_count, (int)ret, (int)transfer_count);
+      }
+
+      offset += ret;
+      index = start_index + (offset >> PAGE_CACHE_SHIFT); // erm - index set twice ??
+
+      offset &= ~PAGE_CACHE_MASK;
+
+      while (index_count) {
+          index_count--;
+          page_cache_release(page_table[index_count]);
+      }
+
+      if (ret == transfer_count && desc->count) {
+          // should probably think of what to do...
+          index_count = 0;
+          start_index = index;
+          transfer_count = 0;
+          loop_offset = offset;
+          desc_remaining = desc->count;
+          continue;
+      }
+      goto out;
+
 
 page_not_up_to_date:
 		/* Get exclusive access to the page ... */
@@ -956,12 +1030,12 @@ readpage:
 		nr = PAGE_CACHE_SIZE;
 		if (index == end_index) {
 			nr = ((isize - 1) & ~PAGE_CACHE_MASK) + 1;
-			if (nr <= offset) {
+			if (nr <= loop_offset) {
 				page_cache_release(page);
 				goto out;
 			}
 		}
-		nr = nr - offset;
+		nr = nr - loop_offset;
 		goto page_ok;
 
 readpage_error:
@@ -1001,48 +1075,105 @@ out:
 	*ppos = ((loff_t) index << PAGE_CACHE_SHIFT) + offset;
 	if (cached_page)
 		page_cache_release(cached_page);
+    // Release any pages that weren't released
+      while (index_count) {
+          index_count--;
+          page_cache_release(page_table[index_count]);
+      }
+
 	if (filp)
 		file_accessed(filp);
 }
 
 EXPORT_SYMBOL(do_generic_mapping_read);
 
-int file_read_actor(read_descriptor_t *desc, struct page *page,
+int file_read_actor(read_descriptor_t *desc, struct page **page,
 			unsigned long offset, unsigned long size)
 {
 	char *kaddr;
 	unsigned long left, count = desc->count;
+    unsigned char* dst;
+    unsigned long ret_size;
+
 
 	if (size > count)
 		size = count;
+
+    ret_size = size;
+
+    dst = desc->arg.buf;
 
 	/*
 	 * Faults on the destination of a read are common, so do it before
 	 * taking the kmap.
 	 */
-	if (!fault_in_pages_writeable(desc->arg.buf, size)) {
-		kaddr = kmap_atomic(page, KM_USER0);
-		left = __copy_to_user_inatomic(desc->arg.buf,
-						kaddr + offset, size);
-		kunmap_atomic(kaddr, KM_USER0);
-		if (left == 0)
-			goto success;
-	}
+    if  (fault_in_pages_writeable(dst, size))
+        goto slow;
+
+    while (size) {
+        unsigned long psize = PAGE_CACHE_SIZE - offset;
+        struct page *page_it;
+
+        psize = PAGE_CACHE_SIZE - offset;
+        if (size <= psize) {
+            psize = size;
+        }
+
+
+        page_it = *page;
+
+        kaddr = kmap_atomic(page_it, KM_USER0);
+        left = __copy_to_user_inatomic(dst,
+                                       kaddr + offset, psize);
+        kunmap_atomic(kaddr, KM_USE R0);
+        if (left != 0)
+            break;
+
+        size -= psize;
+        page++;
+        offset += psize;
+        dst += psize;
+        offset &= (PAGE_CACHE_SIZE - 1);
+    }
+
+    if (size == 0)
+        goto success;
+
 
 	/* Do it the slow way */
-	kaddr = kmap(page);
-	left = __copy_to_user(desc->arg.buf, kaddr + offset, size);
-	kunmap(page);
 
-	if (left) {
-		size -= left;
-		desc->error = -EFAULT;
-	}
+slow:
+    while (size) {
+        unsigned long psize;
+        struct page *page_it;
+
+        psize = PAGE_CACHE_SIZE - offset;
+        if (size <= psize) {
+            psize = size;
+        }
+
+        page_it = *page;
+        kaddr = kmap(page_it);
+        left = __copy_to_user(dst, kaddr + offset, psize);
+        kunmap(page_it);
+
+        if (left) {
+            size -= left;
+            desc->error = -EFAULT;
+            break;
+        }
+        page++;
+        offset += psize;
+        dst += psize;
+        offset &= (PAGE_CACHE_SIZE - 1);
+        size -= psize;
+    }
+
 success:
-	desc->count = count - size;
-	desc->written += size;
-	desc->arg.buf += size;
-	return size;
+	desc->count = count - ret_size;
+	desc->written += ret_size;
+	desc->arg.buf += ret_size;
+	return ret_size;
 }
 
 /*
@@ -1154,7 +1285,7 @@ generic_file_read(struct file *filp, char __user *buf, size_t count, loff_t *ppo
 
 EXPORT_SYMBOL(generic_file_read);
 
-int file_send_actor(read_descriptor_t * desc, struct page *page, unsigned long offset, unsigned long size)
+int file_send_actor(read_descriptor_t * desc, struct page **page, unsigned long offset, unsigned long size)
 {
 	ssize_t written;
 	unsigned long count = desc->count;
@@ -1163,7 +1294,7 @@ int file_send_actor(read_descriptor_t * desc, struct page *page, unsigned long o
 	if (size > count)
 		size = count;
 
-	written = file->f_op->sendpage(file, page, offset,
+	written = file->f_op->sendpages(file, page, offset,
 				       size, &file->f_pos, size<count);
 	if (written < 0) {
 		desc->error = written;

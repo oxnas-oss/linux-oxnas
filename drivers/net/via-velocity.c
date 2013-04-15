@@ -47,7 +47,6 @@
 
 #include <linux/module.h>
 #include <linux/types.h>
-#include <linux/config.h>
 #include <linux/init.h>
 #include <linux/mm.h>
 #include <linux/errno.h>
@@ -65,7 +64,6 @@
 #include <linux/wait.h>
 #include <asm/io.h>
 #include <linux/if.h>
-#include <linux/config.h>
 #include <asm/uaccess.h>
 #include <linux/proc_fs.h>
 #include <linux/inetdevice.h>
@@ -82,10 +80,49 @@
 
 #include "via-velocity.h"
 
+// Default MAC address
+static const u8 DEFAULT_MAC_ADDRESS[] = { 0x00, 0x30, 0xe0, 0x00, 0x00, 0xff };
+static u32 mac_hi=0;
+static u32 mac_lo=0;
+
+#define EXTRA_RX_SKB_SPACE 32
+#define MAX_HW_FRAGMENTS 6
+//#define VELOCITY_ZERO_COPY_SUPPORT
+//#define LOAD_FROM_EEPROM
+
+#define VELOCITY_DESC_IN_SRAM
+
+#ifdef VELOCITY_DESC_IN_SRAM
+#include <asm/arch/desc_alloc.h>
+#define DESC_SRAM_ALLOC_START       ((SRAM_BASE) + 0x4000)
+#define DESC_SRAM_ALLOC_START_PA    ((DESCRIPTORS_BASE_PA) + 0x4000)
+#endif // VELOCITY_DESC_IN_SRAM
+
+/* Parse netdev kernel cmdline options */
+static int __init do_setup(char *str)
+{
+    int i;
+    int ints[5];    // Hold arg count and four args
+
+    get_options(str, sizeof(ints)/sizeof(int), ints);
+    for (i=1; i<=ints[0]; i++) {
+        switch (i) {
+            case 3:
+                mac_hi = ints[i];
+                break;
+            case 4:
+                mac_lo = ints[i];
+                break;
+            default:
+                break;
+        }
+    }
+    return 0;
+}
+__setup("netdev=",do_setup);
 
 static int velocity_nics = 0;
 static int msglevel = MSG_LEVEL_INFO;
-
 
 static int velocity_mii_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd);
 static struct ethtool_ops velocity_ethtool_ops;
@@ -135,7 +172,8 @@ VELOCITY_PARAM(rx_thresh, "Receive fifo threshold");
 
 #define DMA_LENGTH_MIN  0
 #define DMA_LENGTH_MAX  7
-#define DMA_LENGTH_DEF  0
+#define DMA_LENGTH_100M_DEF  6
+#define DMA_LENGTH_1000M_DEF 6
 
 /* DMA_length[] is used for controlling the DMA length
    0: 8 DWORDs
@@ -147,7 +185,8 @@ VELOCITY_PARAM(rx_thresh, "Receive fifo threshold");
    6: SF(flush till emply)
    7: SF(flush till emply)
 */
-VELOCITY_PARAM(DMA_length, "DMA length");
+VELOCITY_PARAM(DMA_length_100M,  "DMA length 100M");
+VELOCITY_PARAM(DMA_length_1000M, "DMA length 1000M");
 
 #define TAGGING_DEF     0
 /* enable_tagging[] is used for enabling 802.1Q VID tagging.
@@ -231,7 +270,8 @@ static int rx_copybreak = 200;
 module_param(rx_copybreak, int, 0644);
 MODULE_PARM_DESC(rx_copybreak, "Copy breakpoint for copy-only-tiny-frames");
 
-static void velocity_init_info(struct pci_dev *pdev, struct velocity_info *vptr, struct velocity_info_tbl *info);
+static void velocity_init_info(struct pci_dev *pdev, struct velocity_info *vptr,
+			       const struct velocity_info_tbl *info);
 static int velocity_get_pci_info(struct velocity_info *, struct pci_dev *pdev);
 static void velocity_print_info(struct velocity_info *vptr);
 static int velocity_open(struct net_device *dev);
@@ -260,6 +300,8 @@ static int velocity_mii_write(struct mac_regs __iomem *, u8 byMiiAddr, u16 data)
 static u32 mii_check_media_mode(struct mac_regs __iomem * regs);
 static u32 check_connection_type(struct mac_regs __iomem * regs);
 static int velocity_set_media_mode(struct velocity_info *vptr, u32 mii_status);
+static void hw_set_mac_address(struct velocity_info *vptr, unsigned char* addr);
+static int set_mac_address(struct net_device *dev, void *p);
 
 #ifdef CONFIG_PM
 
@@ -296,9 +338,9 @@ static void velocity_unregister_notifier(void)
  *	Internal board variants. At the moment we have only one
  */
 
-static struct velocity_info_tbl chip_info_table[] = {
-	{CHIP_TYPE_VT6110, "VIA Networking Velocity Family Gigabit Ethernet Adapter", 256, 1, 0x00FFFFFFUL},
-	{0, NULL}
+static const struct velocity_info_tbl chip_info_table[] __devinitdata = {
+	{CHIP_TYPE_VT6110, "VIA Networking Velocity Family Gigabit Ethernet Adapter", 1, 0x00FFFFFFUL},
+	{ }
 };
 
 /*
@@ -306,10 +348,9 @@ static struct velocity_info_tbl chip_info_table[] = {
  *	device driver. Used for hotplug autoloading.
  */
 
-static struct pci_device_id velocity_id_table[] __devinitdata = {
-	{PCI_VENDOR_ID_VIA, PCI_DEVICE_ID_VIA_612X,
-	 PCI_ANY_ID, PCI_ANY_ID, 0, 0, (unsigned long) chip_info_table},
-	{0, }
+static const struct pci_device_id velocity_id_table[] __devinitdata = {
+	{ PCI_DEVICE(PCI_VENDOR_ID_VIA, PCI_DEVICE_ID_VIA_612X) },
+	{ }
 };
 
 MODULE_DEVICE_TABLE(pci, velocity_id_table);
@@ -343,7 +384,7 @@ static char __devinit *get_chip_name(enum chip_type chip_id)
 static void __devexit velocity_remove1(struct pci_dev *pdev)
 {
 	struct net_device *dev = pci_get_drvdata(pdev);
-	struct velocity_info *vptr = dev->priv;
+	struct velocity_info *vptr = netdev_priv(dev);
 
 #ifdef CONFIG_PM
 	unsigned long flags;
@@ -437,7 +478,8 @@ static void __devinit velocity_get_options(struct velocity_opt *opts, int index,
 {
 
 	velocity_set_int_opt(&opts->rx_thresh, rx_thresh[index], RX_THRESH_MIN, RX_THRESH_MAX, RX_THRESH_DEF, "rx_thresh", devname);
-	velocity_set_int_opt(&opts->DMA_length, DMA_length[index], DMA_LENGTH_MIN, DMA_LENGTH_MAX, DMA_LENGTH_DEF, "DMA_length", devname);
+	velocity_set_int_opt(&opts->DMA_length_100M,  DMA_length_100M[index],  DMA_LENGTH_MIN, DMA_LENGTH_MAX, DMA_LENGTH_100M_DEF,  "DMA_length 100M",  devname);
+	velocity_set_int_opt(&opts->DMA_length_1000M, DMA_length_1000M[index], DMA_LENGTH_MIN, DMA_LENGTH_MAX, DMA_LENGTH_1000M_DEF, "DMA_length 1000M", devname);
 	velocity_set_int_opt(&opts->numrx, RxDescriptors[index], RX_DESC_MIN, RX_DESC_MAX, RX_DESC_DEF, "RxDescriptors", devname);
 	velocity_set_int_opt(&opts->numtx, TxDescriptors[index], TX_DESC_MIN, TX_DESC_MAX, TX_DESC_DEF, "TxDescriptors", devname);
 	velocity_set_int_opt(&opts->vid, VID_setting[index], VLAN_ID_MIN, VLAN_ID_MAX, VLAN_ID_DEF, "VID_setting", devname);
@@ -469,8 +511,8 @@ static void velocity_init_cam_filter(struct velocity_info *vptr)
 	WORD_REG_BITS_ON(MCFG_VIDFR, &regs->MCFG);
 
 	/* Disable all CAMs */
-	memset(vptr->vCAMmask, 0, sizeof(u8) * 8);
-	memset(vptr->mCAMmask, 0, sizeof(u8) * 8);
+	memset(vptr->vCAMmask, 0, VCAM_SIZE / 8);
+	memset(vptr->mCAMmask, 0, MCAM_SIZE / 8);
 	mac_set_cam_mask(regs, vptr->vCAMmask, VELOCITY_VLAN_ID_CAM);
 	mac_set_cam_mask(regs, vptr->mCAMmask, VELOCITY_MULTICAST_CAM);
 
@@ -521,6 +563,61 @@ static void velocity_rx_reset(struct velocity_info *vptr)
 }
 
 /**
+ * Cause the eeprom to be read into the chip.
+ * @returns Zero on success
+ */
+int mac_eeprom_reload(struct mac_regs __iomem *regs)
+{
+#if 0
+{
+int i;
+unsigned char __iomem *ptr = (unsigned char __iomem *)regs;
+printk("Before eeprom load regs:\n");
+printk("0x00:\t");
+for (i=0; i <= MAC_REG_BYTEMSK3_3; ++i) {
+    printk("0x%02x\t", readb(&(ptr[i])));
+    if (!((i+1) % 8)) {
+        printk("\n0x%02x:\t", i+1);
+    }
+}
+}
+#endif
+    BYTE_REG_BITS_ON(EECSR_RELOAD, &((regs)->EECSR));
+    mdelay(100);
+#if 0
+{
+int i;
+unsigned char __iomem *ptr = (unsigned char __iomem *)regs;
+printk("\nAfter eeprom load regs:\n");
+printk("0x00:\t");
+for (i=0; i <= MAC_REG_BYTEMSK3_3; ++i) {
+    printk("0x%02x\t", readb(&(ptr[i])));
+    if (!((i+1) % 8)) {
+        printk("\n0x%02x:\t", i+1);
+    }
+}
+}
+#endif
+    return BYTE_REG_BITS_IS_ON(EECSR_RELOAD, &((regs)->EECSR));
+}
+
+
+static inline void mac_set_dma_length(struct velocity_info *vptr)
+{
+	struct mac_regs __iomem *regs = vptr->mac_regs;
+    int burst_size = vptr->options.DMA_length_100M;
+
+    if (!(vptr->mii_status & VELOCITY_LINK_FAIL) &&
+         (vptr->options.spd_dpx == SPD_DPX_AUTO) &&
+         (vptr->mii_status & VELOCITY_SPEED_1000)) {
+        burst_size = vptr->options.DMA_length_1000M;
+    }
+
+//printk("Setting fifo burst size to %d\n", burst_size);
+	BYTE_REG_BITS_SET(burst_size, 0x07, &(regs->DCFG));
+}
+
+/**
  *	velocity_init_registers	-	initialise MAC registers
  *	@vptr: velocity to init
  *	@type: type of initialisation (hot or cold)
@@ -557,6 +654,7 @@ static void velocity_init_registers(struct velocity_info *vptr,
 				netif_wake_queue(vptr->dev);
 		}
 
+		mac_set_dma_length(vptr);
 		enable_flow_control_ability(vptr);
 
 		mac_clear_isr(regs);
@@ -574,16 +672,27 @@ static void velocity_init_registers(struct velocity_info *vptr,
 		velocity_soft_reset(vptr);
 		mdelay(5);
 
+#ifdef LOAD_FROM_EEPROM
 		mac_eeprom_reload(regs);
+#endif // LOAD_FROM_EEPROM
+
 		for (i = 0; i < 6; i++) {
 			writeb(vptr->dev->dev_addr[i], &(regs->PAR[i]));
 		}
+
+        // Initialise the hardware's record of our primary MAC address
+        hw_set_mac_address(vptr, vptr->dev->dev_addr);
+
+        /*
+         *  Set LED Select bits to CASE_1
+         */
+        BYTE_REG_BITS_SET(CFGA_PHYLEDS1, (CFGA_PHYLEDS1 | CFGA_PHYLEDS0), &(regs->CFGA));
+
 		/*
 		 *	clear Pre_ACPI bit.
 		 */
 		BYTE_REG_BITS_OFF(CFGA_PACPI, &(regs->CFGA));
 		mac_set_rx_thresh(regs, vptr->options.rx_thresh);
-		mac_set_dma_length(regs, vptr->options.DMA_length);
 
 		writeb(WOLCFG_SAM | WOLCFG_SAB, &regs->WOLCFGSet);
 		/*
@@ -636,7 +745,9 @@ static void velocity_init_registers(struct velocity_info *vptr,
 				netif_wake_queue(vptr->dev);
 		}
 
+		mac_set_dma_length(vptr);
 		enable_flow_control_ability(vptr);
+
 		mac_hw_mibs_init(regs);
 		mac_write_int_mask(vptr->int_mask, regs);
 		mac_clear_isr(regs);
@@ -688,21 +799,23 @@ static int __devinit velocity_found1(struct pci_dev *pdev, const struct pci_devi
 	static int first = 1;
 	struct net_device *dev;
 	int i;
-	struct velocity_info_tbl *info = (struct velocity_info_tbl *) ent->driver_data;
+	const struct velocity_info_tbl *info = &chip_info_table[ent->driver_data];
 	struct velocity_info *vptr;
 	struct mac_regs __iomem * regs;
 	int ret = -ENOMEM;
 
+	/* FIXME: this driver, like almost all other ethernet drivers,
+	 * can support more than MAX_UNITS.
+	 */
 	if (velocity_nics >= MAX_UNITS) {
-		printk(KERN_NOTICE VELOCITY_NAME ": already found %d NICs.\n", 
-				velocity_nics);
+		dev_notice(&pdev->dev, "already found %d NICs.\n",
+			   velocity_nics);
 		return -ENODEV;
 	}
 
 	dev = alloc_etherdev(sizeof(struct velocity_info));
-
-	if (dev == NULL) {
-		printk(KERN_ERR VELOCITY_NAME ": allocate net device failed.\n");
+	if (!dev) {
+		dev_err(&pdev->dev, "allocate net device failed.\n");
 		goto out;
 	}
 	
@@ -710,7 +823,7 @@ static int __devinit velocity_found1(struct pci_dev *pdev, const struct pci_devi
 	
 	SET_MODULE_OWNER(dev);
 	SET_NETDEV_DEV(dev, &pdev->dev);
-	vptr = dev->priv;
+	vptr = netdev_priv(dev);
 
 
 	if (first) {
@@ -733,17 +846,17 @@ static int __devinit velocity_found1(struct pci_dev *pdev, const struct pci_devi
 
 	ret = velocity_get_pci_info(vptr, pdev);
 	if (ret < 0) {
-		printk(KERN_ERR VELOCITY_NAME ": Failed to find PCI device.\n");
+		/* error message already printed */
 		goto err_disable;
 	}
 
 	ret = pci_request_regions(pdev, VELOCITY_NAME);
 	if (ret < 0) {
-		printk(KERN_ERR VELOCITY_NAME ": Failed to find PCI device.\n");
+		dev_err(&pdev->dev, "No PCI resources.\n");
 		goto err_disable;
 	}
 
-	regs = ioremap(vptr->memaddr, vptr->io_size);
+	regs = ioremap(vptr->memaddr, VELOCITY_IO_SIZE);
 	if (regs == NULL) {
 		ret = -EIO;
 		goto err_release_res;
@@ -758,6 +871,19 @@ static int __devinit velocity_found1(struct pci_dev *pdev, const struct pci_devi
 	for (i = 0; i < 6; i++)
 		dev->dev_addr[i] = readb(&regs->PAR[i]);
 
+    // Tell the kernel of our MAC address
+    if ((mac_hi==0)&&(mac_lo==0)) {
+        memcpy(dev->dev_addr, DEFAULT_MAC_ADDRESS, dev->addr_len);
+    } else {
+        int i;
+        for (i=0; i < dev->addr_len; i++) {
+            if (i < sizeof(u32)) {
+                dev->dev_addr[i] = ((mac_hi >> (((sizeof(u32)-1)-i)*8)) & 0xff);
+            } else {
+                dev->dev_addr[i] = ((mac_lo >> (((sizeof(u32)+1)-i)*8)) & 0xff);
+            }
+        }
+    }
 
 	velocity_get_options(&vptr->options, velocity_nics, dev->name);
 
@@ -787,6 +913,7 @@ static int __devinit velocity_found1(struct pci_dev *pdev, const struct pci_devi
 	dev->do_ioctl = velocity_ioctl;
 	dev->ethtool_ops = &velocity_ethtool_ops;
 	dev->change_mtu = velocity_change_mtu;
+    dev->set_mac_address = set_mac_address;
 #ifdef  VELOCITY_ZERO_COPY_SUPPORT
 	dev->features |= NETIF_F_SG;
 #endif
@@ -861,15 +988,15 @@ static void __devinit velocity_print_info(struct velocity_info *vptr)
  *	discovered.
  */
 
-static void __devinit velocity_init_info(struct pci_dev *pdev, struct velocity_info *vptr, struct velocity_info_tbl *info)
+static void __devinit velocity_init_info(struct pci_dev *pdev,
+					 struct velocity_info *vptr,
+					 const struct velocity_info_tbl *info)
 {
 	memset(vptr, 0, sizeof(struct velocity_info));
 
 	vptr->pdev = pdev;
 	vptr->chip_id = info->chip_id;
-	vptr->io_size = info->io_size;
 	vptr->num_txq = info->txqueue;
-	vptr->multicast_limit = MCAM_SIZE;
 	spin_lock_init(&vptr->lock);
 	INIT_LIST_HEAD(&vptr->list);
 }
@@ -885,8 +1012,7 @@ static void __devinit velocity_init_info(struct pci_dev *pdev, struct velocity_i
 
 static int __devinit velocity_get_pci_info(struct velocity_info *vptr, struct pci_dev *pdev)
 {
-
-	if(pci_read_config_byte(pdev, PCI_REVISION_ID, &vptr->rev_id) < 0)
+	if (pci_read_config_byte(pdev, PCI_REVISION_ID, &vptr->rev_id) < 0)
 		return -EIO;
 		
 	pci_set_master(pdev);
@@ -894,24 +1020,20 @@ static int __devinit velocity_get_pci_info(struct velocity_info *vptr, struct pc
 	vptr->ioaddr = pci_resource_start(pdev, 0);
 	vptr->memaddr = pci_resource_start(pdev, 1);
 	
-	if(!(pci_resource_flags(pdev, 0) & IORESOURCE_IO))
-	{
-		printk(KERN_ERR "%s: region #0 is not an I/O resource, aborting.\n",
-				pci_name(pdev));
+	if (!(pci_resource_flags(pdev, 0) & IORESOURCE_IO)) {
+		dev_err(&pdev->dev,
+			   "region #0 is not an I/O resource, aborting.\n");
 		return -EINVAL;
 	}
 
-	if((pci_resource_flags(pdev, 1) & IORESOURCE_IO))
-	{
-		printk(KERN_ERR "%s: region #1 is an I/O resource, aborting.\n",
-				pci_name(pdev));
+	if ((pci_resource_flags(pdev, 1) & IORESOURCE_IO)) {
+		dev_err(&pdev->dev,
+			   "region #1 is an I/O resource, aborting.\n");
 		return -EINVAL;
 	}
 
-	if(pci_resource_len(pdev, 1) < 256)
-	{
-		printk(KERN_ERR "%s: region #1 is too small.\n", 
-				pci_name(pdev));
+	if (pci_resource_len(pdev, 1) < VELOCITY_IO_SIZE) {
+		dev_err(&pdev->dev, "region #1 is too small.\n");
 		return -EINVAL;
 	}
 	vptr->pdev = pdev;
@@ -946,7 +1068,12 @@ static int velocity_init_rings(struct velocity_info *vptr)
 	 * pci_alloc_consistent() fulfills the requirement for 64 bytes
 	 * alignment
 	 */
-	pool = pci_alloc_consistent(vptr->pdev, psize, &pool_dma);
+#ifdef VELOCITY_DESC_IN_SRAM
+    pool = (u8*)DESC_SRAM_ALLOC_START;
+    pool_dma = DESC_SRAM_ALLOC_START_PA;
+#else
+     pool = pci_alloc_consistent(vptr->pdev, psize, &pool_dma);
+#endif // VELOCITY_DESC_IN_SRAM
 
 	if (pool == NULL) {
 		printk(KERN_ERR "%s : DMA memory allocation failed.\n", 
@@ -967,7 +1094,9 @@ static int velocity_init_rings(struct velocity_info *vptr)
 	if (vptr->tx_bufs == NULL) {
 		printk(KERN_ERR "%s: DMA memory allocation failed.\n", 
 					vptr->dev->name);
+#ifndef VELOCITY_DESC_IN_SRAM
 		pci_free_consistent(vptr->pdev, psize, pool, pool_dma);
+#endif // !VELOCITY_DESC_IN_SRAM
 		return -ENOMEM;
 	}
 
@@ -1001,7 +1130,9 @@ static void velocity_free_rings(struct velocity_info *vptr)
 	size = vptr->options.numrx * sizeof(struct rx_desc) + 
 	       vptr->options.numtx * sizeof(struct tx_desc) * vptr->num_txq;
 
+#ifndef VELOCITY_DESC_IN_SRAM
 	pci_free_consistent(vptr->pdev, size, vptr->rd_ring, vptr->rd_pool_dma);
+#endif // !VELOCITY_DESC_IN_SRAM
 
 	size = vptr->options.numtx * PKT_BUF_SZ * vptr->num_txq;
 
@@ -1172,31 +1303,12 @@ static int velocity_init_td_ring(struct velocity_info *vptr)
 	return 0;
 }
 
-/*
- *	FIXME: could we merge this with velocity_free_tx_buf ?
- */
-
-static void velocity_free_td_ring_entry(struct velocity_info *vptr,
-							 int q, int n)
+static void velocity_free_td_ring_entry(struct velocity_info *vptr, int q, int n)
 {
 	struct velocity_td_info * td_info = &(vptr->td_infos[q][n]);
-	int i;
-	
-	if (td_info == NULL)
-		return;
-		
-	if (td_info->skb) {
-		for (i = 0; i < td_info->nskb_dma; i++)
-		{
-			if (td_info->skb_dma[i]) {
-				pci_unmap_single(vptr->pdev, td_info->skb_dma[i], 
-					td_info->skb->len, PCI_DMA_TODEVICE);
-				td_info->skb_dma[i] = (dma_addr_t) NULL;
-			}
-		}
-		dev_kfree_skb(td_info->skb);
-		td_info->skb = NULL;
-	}
+
+	if (td_info && td_info->skb)
+        velocity_free_tx_buf(vptr, td_info);
 }
 
 /**
@@ -1211,12 +1323,11 @@ static void velocity_free_td_ring(struct velocity_info *vptr)
 {
 	int i, j;
 
-	for (j = 0; j < vptr->num_txq; j++) {
+	for (j=0; j < vptr->num_txq; j++) {
 		if (vptr->td_infos[j] == NULL)
 			continue;
-		for (i = 0; i < vptr->options.numtx; i++) {
+		for (i=0; i < vptr->options.numtx; i++) {
 			velocity_free_td_ring_entry(vptr, j, i);
-
 		}
 		kfree(vptr->td_infos[j]);
 		vptr->td_infos[j] = NULL;
@@ -1239,7 +1350,7 @@ static int velocity_rx_srv(struct velocity_info *vptr, int status)
 	int rd_curr = vptr->rd_curr;
 	int works = 0;
 
-	do {
+    while (1) {
 		struct rx_desc *rd = vptr->rd_ring + rd_curr;
 
 		if (!vptr->rd_info[rd_curr].skb)
@@ -1254,15 +1365,19 @@ static int velocity_rx_srv(struct velocity_info *vptr, int status)
 		 *	Don't drop CE or RL error frame although RXOK is off
 		 */
 		if ((rd->rdesc0.RSR & RSR_RXOK) || (!(rd->rdesc0.RSR & RSR_RXOK) && (rd->rdesc0.RSR & (RSR_CE | RSR_RL)))) {
-			if (velocity_receive_frame(vptr, rd_curr) < 0)
-				stats->rx_dropped++;
+			if (velocity_receive_frame(vptr, rd_curr) < 0) {
+                /* velocity_receive_frame() has already recorded the type of */
+                /* so just inc overall rx error count */
+                ++stats->rx_errors;
+            }
 		} else {
 			if (rd->rdesc0.RSR & RSR_CRC)
 				stats->rx_crc_errors++;
 			if (rd->rdesc0.RSR & RSR_FAE)
 				stats->rx_frame_errors++;
 
-			stats->rx_dropped++;
+            /* We've had an error of some sort so inc. overall rx error count */
+            ++stats->rx_errors;
 		}
 
 		rd->inten = 1;
@@ -1272,7 +1387,9 @@ static int velocity_rx_srv(struct velocity_info *vptr, int status)
 		rd_curr++;
 		if (rd_curr >= vptr->options.numrx)
 			rd_curr = 0;
-	} while (++works <= 15);
+
+        ++works;
+    }
 
 	vptr->rd_curr = rd_curr;
 
@@ -1331,13 +1448,13 @@ static inline int velocity_rx_copy(struct sk_buff **rx_skb, int pkt_size,
 	if (pkt_size < rx_copybreak) {
 		struct sk_buff *new_skb;
 
-		new_skb = dev_alloc_skb(pkt_size + 2);
+        /* Always realign IP header to quad boundary if copying anyway */
+		new_skb = dev_alloc_skb(pkt_size + NET_IP_ALIGN);
 		if (new_skb) {
 			new_skb->dev = vptr->dev;
 			new_skb->ip_summed = rx_skb[0]->ip_summed;
 
-			if (vptr->flags & VELOCITY_FLAGS_IP_ALIGN)
-				skb_reserve(new_skb, 2);
+			skb_reserve(new_skb, NET_IP_ALIGN);
 
 			memcpy(new_skb->data, rx_skb[0]->data, pkt_size);
 			*rx_skb = new_skb;
@@ -1360,13 +1477,10 @@ static inline int velocity_rx_copy(struct sk_buff **rx_skb, int pkt_size,
 static inline void velocity_iph_realign(struct velocity_info *vptr,
 					struct sk_buff *skb, int pkt_size)
 {
-	/* FIXME - memmove ? */
 	if (vptr->flags & VELOCITY_FLAGS_IP_ALIGN) {
-		int i;
-
-		for (i = pkt_size; i >= 0; i--)
-			*(skb->data + i + 2) = *(skb->data + i);
-		skb_reserve(skb, 2);
+//printk("velocity_iph_realign()\n");
+        memmove(skb->data + NET_IP_ALIGN, skb->data, pkt_size);
+		skb_reserve(skb, NET_IP_ALIGN);
 	}
 }
 
@@ -1389,7 +1503,7 @@ static int velocity_receive_frame(struct velocity_info *vptr, int idx)
 	struct sk_buff *skb;
 
 	if (rd->rdesc0.RSR & (RSR_STP | RSR_EDP)) {
-		VELOCITY_PRT(MSG_LEVEL_VERBOSE, KERN_ERR " %s : the received frame span multple RDs.\n", vptr->dev->name);
+		VELOCITY_PRT(MSG_LEVEL_VERBOSE, KERN_ERR " %s : the received frame spans multple RDs.\n", vptr->dev->name);
 		stats->rx_length_errors++;
 		return -EINVAL;
 	}
@@ -1406,7 +1520,6 @@ static int velocity_receive_frame(struct velocity_info *vptr, int idx)
 	/*
 	 *	Drop frame not meeting IEEE 802.3
 	 */
-	 
 	if (vptr->flags & VELOCITY_FLAGS_VAL_PKT_LEN) {
 		if (rd->rdesc0.RSR & RSR_RL) {
 			stats->rx_length_errors++;
@@ -1431,6 +1544,8 @@ static int velocity_receive_frame(struct velocity_info *vptr, int idx)
 	skb->protocol = eth_type_trans(skb, skb->dev);	
 
 	stats->rx_bytes += pkt_len;
+    ++stats->rx_packets;
+
 	netif_rx(skb);
 
 	return 0;
@@ -1467,7 +1582,6 @@ static int velocity_alloc_rx_buf(struct velocity_info *vptr, int idx)
 	/*
 	 *	Fill in the descriptor to match
  	 */	
- 	 
 	*((u32 *) & (rd->rdesc0)) = 0;
 	rd->len = cpu_to_le32(vptr->rx_buf_sz);
 	rd->inten = 1;
@@ -1509,8 +1623,7 @@ static int velocity_tx_srv(struct velocity_info *vptr, u32 status)
 			if (td->tdesc0.owner == OWNED_BY_NIC)
 				break;
 
-			if ((works++ > 15))
-				break;
+            ++works;
 
 			if (td->tdesc0.TSR & TSR0_TERR) {
 				stats->tx_errors++;
@@ -1597,6 +1710,37 @@ static void velocity_print_link_status(struct velocity_info *vptr)
 }
 
 /**
+ *	velocity_update_hw_mibs	-	fetch MIB counters from chip
+ *	@vptr: velocity to update
+ *
+ *	The velocity hardware keeps certain counters in the hardware
+ * 	side. We need to read these when the user asks for statistics
+ *	or when they overflow (causing an interrupt). The read of the
+ *	statistic clears it, so we keep running master counters in user
+ *	space.
+ */
+static void velocity_update_hw_mibs(struct velocity_info *vptr)
+{
+	int i;
+
+	/* Toggle flush to update MIB SRAM from fast counters */
+	BYTE_REG_BITS_ON(MIBCR_MIBFLSH, &(vptr->mac_regs->MIBCR));
+	while (BYTE_REG_BITS_IS_ON(MIBCR_MIBFLSH, &(vptr->mac_regs->MIBCR)));
+
+	/* Toggle MIBINI to begin MIB SRAM read out. Datasheet says always reads as
+       zero, so no point polling for it to return to zero after setting */
+	BYTE_REG_BITS_ON(MIBCR_MPTRINI, &(vptr->mac_regs->MIBCR));
+
+	for (i=0; i < HW_MIB_SIZE; ++i) {
+		/* Read MIB, preserving both index and count */
+		u32 mib = readl(&(vptr->mac_regs->MIBData));
+		int index = (mib & 0xff000000) >> 24;
+		u32 count =  mib & 0x00ffffff;
+		vptr->mib_counter[index] += count;
+	}
+}
+
+/**
  *	velocity_error	-	handle error from controller
  *	@vptr: velocity
  *	@status: card status
@@ -1664,6 +1808,8 @@ static void velocity_error(struct velocity_info *vptr, int status)
 		}
 
 		velocity_print_link_status(vptr);
+
+		mac_set_dma_length(vptr);
 		enable_flow_control_ability(vptr);
 
 		/*
@@ -1678,9 +1824,11 @@ static void velocity_error(struct velocity_info *vptr, int status)
 		else
 			netif_wake_queue(vptr->dev);
 
-	};
+	}
+
 	if (status & ISR_MIBFI)
 		velocity_update_hw_mibs(vptr);
+
 	if (status & ISR_LSTEI)
 		mac_rx_queue_wake(vptr->mac_regs);
 }
@@ -1690,29 +1838,35 @@ static void velocity_error(struct velocity_info *vptr, int status)
  *	@vptr: velocity
  *	@tdinfo: buffer
  *
- *	Release an transmit buffer. If the buffer was preallocated then
+ *	Release a transmit buffer. If the buffer was preallocated then
  *	recycle it, if not then unmap the buffer.
  */
- 
 static void velocity_free_tx_buf(struct velocity_info *vptr, struct velocity_td_info *tdinfo)
 {
 	struct sk_buff *skb = tdinfo->skb;
 	int i;
 
-	/*
-	 *	Don't unmap the pre-allocated tx_bufs
-	 */
-	if (tdinfo->skb_dma && (tdinfo->skb_dma[0] != tdinfo->buf_dma)) {
+	/* Don't unmap the pre-allocated tx_bufs */
+	if (tdinfo->skb_dma[0] && (tdinfo->skb_dma[0] != tdinfo->buf_dma)) {
+        if (tdinfo->nskb_dma == 1) {
+            /* Either no fragments originally, or was linearized because too
+               many fragments */
+            pci_unmap_single(vptr->pdev, tdinfo->skb_dma[0], skb->len, PCI_DMA_TODEVICE);
+            tdinfo->skb_dma[0] = 0;
+        } else {
+            /* Unmap the head buffer */
+            pci_unmap_single(vptr->pdev, tdinfo->skb_dma[0], skb_headlen(skb), PCI_DMA_TODEVICE);
+            tdinfo->skb_dma[0] = 0;
 
-		for (i = 0; i < tdinfo->nskb_dma; i++) {
-#ifdef VELOCITY_ZERO_COPY_SUPPORT
-			pci_unmap_single(vptr->pdev, tdinfo->skb_dma[i], td->tdesc1.len, PCI_DMA_TODEVICE);
-#else
-			pci_unmap_single(vptr->pdev, tdinfo->skb_dma[i], skb->len, PCI_DMA_TODEVICE);
-#endif
-			tdinfo->skb_dma[i] = 0;
-		}
+            /* Unmap the fragment buffers */
+            for (i=0; i < tdinfo->nskb_dma-1; ++i) {
+                pci_unmap_page(vptr->pdev, tdinfo->skb_dma[i+1],
+                    skb_shinfo(skb)->frags[i].size, PCI_DMA_TODEVICE);
+                tdinfo->skb_dma[i+1] = 0;
+            }
+        }
 	}
+
 	dev_kfree_skb_irq(skb);
 	tdinfo->skb = NULL;
 }
@@ -1730,10 +1884,10 @@ static void velocity_free_tx_buf(struct velocity_info *vptr, struct velocity_td_
  
 static int velocity_open(struct net_device *dev)
 {
-	struct velocity_info *vptr = dev->priv;
+	struct velocity_info *vptr = netdev_priv(dev);
 	int ret;
 
-	vptr->rx_buf_sz = (dev->mtu <= 1504 ? PKT_BUF_SZ : dev->mtu + 32);
+    vptr->rx_buf_sz = dev->mtu + NET_IP_ALIGN + EXTRA_RX_SKB_SPACE;
 
 	ret = velocity_init_rings(vptr);
 	if (ret < 0)
@@ -1787,7 +1941,7 @@ err_free_desc_rings:
  
 static int velocity_change_mtu(struct net_device *dev, int new_mtu)
 {
-	struct velocity_info *vptr = dev->priv;
+	struct velocity_info *vptr = netdev_priv(dev);
 	unsigned long flags;
 	int oldmtu = dev->mtu;
 	int ret = 0;
@@ -1807,13 +1961,7 @@ static int velocity_change_mtu(struct net_device *dev, int new_mtu)
 		velocity_free_td_ring(vptr);
 		velocity_free_rd_ring(vptr);
 
-		dev->mtu = new_mtu;
-		if (new_mtu > 8192)
-			vptr->rx_buf_sz = 9 * 1024;
-		else if (new_mtu > 4096)
-			vptr->rx_buf_sz = 8192;
-		else
-			vptr->rx_buf_sz = 4 * 1024;
+		dev->mtu = new_mtu + NET_IP_ALIGN + EXTRA_RX_SKB_SPACE;
 
 		ret = velocity_init_rd_ring(vptr);
 		if (ret < 0)
@@ -1863,7 +2011,7 @@ static void velocity_shutdown(struct velocity_info *vptr)
 
 static int velocity_close(struct net_device *dev)
 {
-	struct velocity_info *vptr = dev->priv;
+	struct velocity_info *vptr = netdev_priv(dev);
 
 	netif_stop_queue(dev);
 	velocity_shutdown(vptr);
@@ -1896,14 +2044,27 @@ static int velocity_close(struct net_device *dev)
  
 static int velocity_xmit(struct sk_buff *skb, struct net_device *dev)
 {
-	struct velocity_info *vptr = dev->priv;
+	struct velocity_info *vptr = netdev_priv(dev);
 	int qnum = 0;
 	struct tx_desc *td_ptr;
 	struct velocity_td_info *tdinfo;
 	unsigned long flags;
 	int index;
+	int pktlen;
 
-	int pktlen = skb->len;
+#ifdef VELOCITY_ZERO_COPY_SUPPORT
+	if (skb_shinfo(skb)->nr_frags > MAX_HW_FRAGMENTS) {
+//printk("Too many fragments (%d), linearizing\n", skb_shinfo(skb)->nr_frags);
+        if (__skb_linearize(skb, GFP_ATOMIC)) {
+//printk("Linearization failed, dropping Tx packet\n");
+            kfree_skb(skb);
+            return 0;
+        }
+	}
+#endif
+
+    // Get packet length after any linearization has occured
+    pktlen = skb->len;
 
 	spin_lock_irqsave(&vptr->lock, flags);
 
@@ -1919,18 +2080,25 @@ static int velocity_xmit(struct sk_buff *skb, struct net_device *dev)
 	 *	Pad short frames. 
 	 */
 	if (pktlen < ETH_ZLEN) {
-		/* Cannot occur until ZC support */
-		if(skb_linearize(skb, GFP_ATOMIC))
-			return 0; 
+        int pad_required = ETH_ZLEN - skb->len;
+
 		pktlen = ETH_ZLEN;
-		memcpy(tdinfo->buf, skb->data, skb->len);
-		memset(tdinfo->buf + skb->len, 0, ETH_ZLEN - skb->len);
 		tdinfo->skb = skb;
-		tdinfo->skb_dma[0] = tdinfo->buf_dma;
+
+        if (skb_tailroom(skb) >= pad_required) {
+//printk("Using short frame\n");
+			tdinfo->skb_dma[0] = pci_map_single(vptr->pdev, skb->data, pktlen, PCI_DMA_TODEVICE);
+        } else {
+//printk("Copying short frame\n");
+            memcpy(tdinfo->buf, skb->data, skb->len);
+            memset(tdinfo->buf + skb->len, 0, ETH_ZLEN - skb->len);
+            tdinfo->skb_dma[0] = tdinfo->buf_dma;
+        }
+
 		td_ptr->tdesc0.pktsize = pktlen;
 		td_ptr->td_buf[0].pa_low = cpu_to_le32(tdinfo->skb_dma[0]);
 		td_ptr->td_buf[0].pa_high = 0;
-		td_ptr->td_buf[0].bufsize = td_ptr->tdesc0.pktsize;
+		td_ptr->td_buf[0].bufsize = pktlen;
 		tdinfo->nskb_dma = 1;
 		td_ptr->tdesc1.CMDZ = 2;
 	} else
@@ -1938,42 +2106,46 @@ static int velocity_xmit(struct sk_buff *skb, struct net_device *dev)
 	if (skb_shinfo(skb)->nr_frags > 0) {
 		int nfrags = skb_shinfo(skb)->nr_frags;
 		tdinfo->skb = skb;
-		if (nfrags > 6) {
-			skb_linearize(skb, GFP_ATOMIC);
-			memcpy(tdinfo->buf, skb->data, skb->len);
-			tdinfo->skb_dma[0] = tdinfo->buf_dma;
-			td_ptr->tdesc0.pktsize = 
+        td_ptr->tdesc0.pktsize = pktlen;
+
+		if (nfrags > MAX_HW_FRAGMENTS) {
+//printk("Using linearized skb\n");
+            /* SKB has already been linearized above, so use direct from skb */
+			tdinfo->skb_dma[0] = pci_map_single(vptr->pdev, skb->data, pktlen, PCI_DMA_TODEVICE);
 			td_ptr->td_buf[0].pa_low = cpu_to_le32(tdinfo->skb_dma[0]);
 			td_ptr->td_buf[0].pa_high = 0;
-			td_ptr->td_buf[0].bufsize = td_ptr->tdesc0.pktsize;
+			td_ptr->td_buf[0].bufsize = pktlen;
 			tdinfo->nskb_dma = 1;
 			td_ptr->tdesc1.CMDZ = 2;
 		} else {
 			int i = 0;
-			tdinfo->nskb_dma = 0;
-			tdinfo->skb_dma[i] = pci_map_single(vptr->pdev, skb->data, skb->len - skb->data_len, PCI_DMA_TODEVICE);
 
-			td_ptr->tdesc0.pktsize = pktlen;
+			tdinfo->skb_dma[0] = pci_map_single(vptr->pdev, skb->data, skb_headlen(skb), PCI_DMA_TODEVICE);
 
-			/* FIXME: support 48bit DMA later */
-			td_ptr->td_buf[i].pa_low = cpu_to_le32(tdinfo->skb_dma);
-			td_ptr->td_buf[i].pa_high = 0;
-			td_ptr->td_buf[i].bufsize = skb->len->skb->data_len;
+			td_ptr->td_buf[0].pa_low = cpu_to_le32(tdinfo->skb_dma[0]);
+			td_ptr->td_buf[0].pa_high = 0;
+			td_ptr->td_buf[0].bufsize = skb_headlen(skb);
 
-			for (i = 0; i < nfrags; i++) {
+			for (i=0; i < nfrags; ++i) {
 				skb_frag_t *frag = &skb_shinfo(skb)->frags[i];
-				void *addr = ((void *) page_address(frag->page + frag->page_offset));
 
-				tdinfo->skb_dma[i + 1] = pci_map_single(vptr->pdev, addr, frag->size, PCI_DMA_TODEVICE);
+                tdinfo->skb_dma[i+1] = pci_map_page(vptr->pdev, frag->page, frag->page_offset, frag->size, PCI_DMA_TODEVICE);
 
-				td_ptr->td_buf[i + 1].pa_low = cpu_to_le32(tdinfo->skb_dma[i + 1]);
-				td_ptr->td_buf[i + 1].pa_high = 0;
-				td_ptr->td_buf[i + 1].bufsize = frag->size;
+                td_ptr->td_buf[i+1].pa_low = cpu_to_le32(tdinfo->skb_dma[i+1]);
+                td_ptr->td_buf[i+1].pa_high = 0;
+                td_ptr->td_buf[i+1].bufsize = frag->size;
 			}
-			tdinfo->nskb_dma = i - 1;
-			td_ptr->tdesc1.CMDZ = i;
-		}
 
+			tdinfo->nskb_dma = nfrags+1;
+			td_ptr->tdesc1.CMDZ = nfrags+2;
+
+//printk("Num frags = %d\n", nfrags);
+//printk("skb: 0x%08lx:0x%08x, %d\n", (unsigned long)skb->data, tdinfo->skb_dma[0], skb_headlen(skb));
+//for (i=0; i < nfrags; ++i) {
+//    skb_frag_t *frag = &skb_shinfo(skb)->frags[i];
+//    printk("frag: 0x%08lx:0x%08x, %d\n", (unsigned long)page_address(frag->page) + frag->page_offset, tdinfo->skb_dma[i+1], frag->size);
+//}
+		}
 	} else
 #endif
 	{
@@ -1986,7 +2158,7 @@ static int velocity_xmit(struct sk_buff *skb, struct net_device *dev)
 		td_ptr->tdesc0.pktsize = pktlen;
 		td_ptr->td_buf[0].pa_low = cpu_to_le32(tdinfo->skb_dma[0]);
 		td_ptr->td_buf[0].pa_high = 0;
-		td_ptr->td_buf[0].bufsize = td_ptr->tdesc0.pktsize;
+		td_ptr->td_buf[0].bufsize = pktlen;
 		tdinfo->nskb_dma = 1;
 		td_ptr->tdesc1.CMDZ = 2;
 	}
@@ -2001,21 +2173,23 @@ static int velocity_xmit(struct sk_buff *skb, struct net_device *dev)
 	/*
 	 *	Handle hardware checksum
 	 */
-	if ((vptr->flags & VELOCITY_FLAGS_TX_CSUM)
-				 && (skb->ip_summed == CHECKSUM_HW)) {
+	if ((vptr->flags & VELOCITY_FLAGS_TX_CSUM) &&
+        (skb->ip_summed == CHECKSUM_HW)) {
 		struct iphdr *ip = skb->nh.iph;
+
 		if (ip->protocol == IPPROTO_TCP)
 			td_ptr->tdesc1.TCR |= TCR0_TCPCK;
 		else if (ip->protocol == IPPROTO_UDP)
 			td_ptr->tdesc1.TCR |= (TCR0_UDPCK);
+
 		td_ptr->tdesc1.TCR |= TCR0_IPCK;
 	}
 	{
-
 		int prev = index - 1;
 
 		if (prev < 0)
 			prev = vptr->options.numtx - 1;
+
 		td_ptr->tdesc0.owner = OWNED_BY_NIC;
 		vptr->td_used[qnum]++;
 		vptr->td_curr[qnum] = (index + 1) % vptr->options.numtx;
@@ -2027,6 +2201,7 @@ static int velocity_xmit(struct sk_buff *skb, struct net_device *dev)
 		td_ptr->td_buf[0].queue = 1;
 		mac_tx_queue_wake(vptr->mac_regs, qnum);
 	}
+
 	dev->trans_start = jiffies;
 	spin_unlock_irqrestore(&vptr->lock, flags);
 	return 0;
@@ -2047,7 +2222,7 @@ static int velocity_xmit(struct sk_buff *skb, struct net_device *dev)
 static int velocity_intr(int irq, void *dev_instance, struct pt_regs *regs)
 {
 	struct net_device *dev = dev_instance;
-	struct velocity_info *vptr = dev->priv;
+	struct velocity_info *vptr = netdev_priv(dev);
 	u32 isr_status;
 	int max_count = 0;
 
@@ -2055,39 +2230,29 @@ static int velocity_intr(int irq, void *dev_instance, struct pt_regs *regs)
 	spin_lock(&vptr->lock);
 	isr_status = mac_read_isr(vptr->mac_regs);
 
-	/* Not us ? */
-	if (isr_status == 0) {
+	if (!isr_status) {
 		spin_unlock(&vptr->lock);
 		return IRQ_NONE;
 	}
 
 	mac_disable_int(vptr->mac_regs);
 
-	/*
-	 *	Keep processing the ISR until we have completed
-	 *	processing and the isr_status becomes zero
-	 */
-	 
-	while (isr_status != 0) {
+	/* Process all pending interrupts */
+	while (isr_status) {
+        /* Ack all pending interrupt sources */
 		mac_write_isr(vptr->mac_regs, isr_status);
-		if (isr_status & (~(ISR_PRXI | ISR_PPRXI | ISR_PTXI | ISR_PPTXI)))
-			velocity_error(vptr, isr_status);
+
+		velocity_error(vptr, isr_status);
 		if (isr_status & (ISR_PRXI | ISR_PPRXI))
 			max_count += velocity_rx_srv(vptr, isr_status);
 		if (isr_status & (ISR_PTXI | ISR_PPTXI))
 			max_count += velocity_tx_srv(vptr, isr_status);
 		isr_status = mac_read_isr(vptr->mac_regs);
-		if (max_count > vptr->options.int_works)
-		{
-			printk(KERN_WARNING "%s: excessive work at interrupt.\n", 
-				dev->name);
-			max_count = 0;
-		}
 	}
+
 	spin_unlock(&vptr->lock);
 	mac_enable_int(vptr->mac_regs);
 	return IRQ_HANDLED;
-
 }
 
 
@@ -2099,43 +2264,70 @@ static int velocity_intr(int irq, void *dev_instance, struct pt_regs *regs)
  *	for a velocity adapter. Reload the CAMs with the new address
  *	filter ruleset.
  */
- 
+static void clear_all_multicast(struct velocity_info *vptr)
+{
+	struct mac_regs __iomem * regs = vptr->mac_regs;
+
+    /* Do not allow any multicast packets through the multicast hash table */
+    writel(0x0, &regs->MARCAM[0]);
+    writel(0x0, &regs->MARCAM[4]);
+}
+
+static void set_all_multicast(struct velocity_info *vptr)
+{
+	struct mac_regs __iomem * regs = vptr->mac_regs;
+
+    /* Allow all multicast packets through the multicast hash table */
+    writel(0xffffffff, &regs->MARCAM[0]);
+    writel(0xffffffff, &regs->MARCAM[4]);
+}
+
 static void velocity_set_multi(struct net_device *dev)
 {
-	struct velocity_info *vptr = dev->priv;
+	struct velocity_info *vptr = netdev_priv(dev);
 	struct mac_regs __iomem * regs = vptr->mac_regs;
-	u8 rx_mode;
-	int i;
 	struct dev_mc_list *mclist;
+	int i;
+	u8 rx_mode = RCR_AB;    /* Always enable broadcast packet reception */
 
-	if (dev->flags & IFF_PROMISC) {	/* Set promiscuous. */
-		/* Unconditionally log net taps. */
+    /* Clear out the multicast hash table */
+    clear_all_multicast(vptr);
+
+    /* Disable all multicast CAM entries */
+	memset(vptr->mCAMmask, 0, MCAM_SIZE / 8);
+    mac_set_cam_mask(regs, vptr->mCAMmask, VELOCITY_MULTICAST_CAM);
+
+	if (dev->flags & IFF_PROMISC) {
+        /* Enable promiscuous mode */
 		printk(KERN_NOTICE "%s: Promiscuous mode enabled.\n", dev->name);
-		writel(0xffffffff, &regs->MARCAM[0]);
-		writel(0xffffffff, &regs->MARCAM[4]);
-		rx_mode = (RCR_AM | RCR_AB | RCR_PROM);
-	} else if ((dev->mc_count > vptr->multicast_limit)
-		   || (dev->flags & IFF_ALLMULTI)) {
-		writel(0xffffffff, &regs->MARCAM[0]);
-		writel(0xffffffff, &regs->MARCAM[4]);
-		rx_mode = (RCR_AM | RCR_AB);
-	} else {
-		int offset = MCAM_SIZE - vptr->multicast_limit;
-		mac_get_cam_mask(regs, vptr->mCAMmask, VELOCITY_MULTICAST_CAM);
 
+        set_all_multicast(vptr);
+		rx_mode |= (RCR_PROM | RCR_AM);
+	} else if ((dev->mc_count > MCAM_SIZE) ||
+               (dev->flags & IFF_ALLMULTI)) {
+        /* ALL_MULTI or too many entries for perfect filtering, so allow all
+         * multicast packets through hash table */
+        set_all_multicast(vptr);
+		rx_mode |= RCR_AM;
+	} else {
+        /* Write a CAM entry for each multicast address */
 		for (i = 0, mclist = dev->mc_list; mclist && i < dev->mc_count; i++, mclist = mclist->next) {
-			mac_set_cam(regs, i + offset, mclist->dmi_addr, VELOCITY_MULTICAST_CAM);
-			vptr->mCAMmask[(offset + i) / 8] |= 1 << ((offset + i) & 7);
+			mac_set_cam(regs, i, mclist->dmi_addr, VELOCITY_MULTICAST_CAM);
+			vptr->mCAMmask[i / 8] |= 1 << (i & 7);
 		}
 
+        /* Enable those multicast CAM entries just written */
 		mac_set_cam_mask(regs, vptr->mCAMmask, VELOCITY_MULTICAST_CAM);
-		rx_mode = (RCR_AM | RCR_AB);
+
+        /* Enable multicast perfect matching */
+		rx_mode |= (RCR_AM | RCR_AP);
 	}
+
+    /* Allow large packets if indicated by MTU */
 	if (dev->mtu > 1500)
 		rx_mode |= RCR_AL;
 
-	BYTE_REG_BITS_ON(rx_mode, &regs->RCR);
-
+	BYTE_REG_BITS_SET(rx_mode, RCR_AM | RCR_AB | RCR_PROM | RCR_AL | RCR_AP, &regs->RCR);
 }
 
 /**
@@ -2152,32 +2344,28 @@ static void velocity_set_multi(struct net_device *dev)
 static struct net_device_stats *velocity_get_stats(struct net_device *dev)
 {
 	struct velocity_info *vptr = dev->priv;
-	
-	/* If the hardware is down, don't touch MII */
-	if(!netif_running(dev))
-		return &vptr->stats;
 
-	spin_lock_irq(&vptr->lock);
-	velocity_update_hw_mibs(vptr);
-	spin_unlock_irq(&vptr->lock);
+#if 0
+    /* Only access the MIBs if the hardware is up */
+    if (netif_running(dev)) {
+        int i;
 
-	vptr->stats.rx_packets = vptr->mib_counter[HW_MIB_ifRxAllPkts];
-	vptr->stats.rx_errors = vptr->mib_counter[HW_MIB_ifRxErrorPkts];
-	vptr->stats.rx_length_errors = vptr->mib_counter[HW_MIB_ifInRangeLengthErrors];
+        /* Transfer from fast counters to MIB SRAM, locking against
+           simulatanous access by ISR due to MIB high threshold being
+           exceeded */
+        spin_lock_irq(&vptr->lock);
+        velocity_update_hw_mibs(vptr);
+        spin_unlock_irq(&vptr->lock);
 
-//  unsigned long   rx_dropped;     /* no space in linux buffers    */
-	vptr->stats.collisions = vptr->mib_counter[HW_MIB_ifTxEtherCollisions];
-	/* detailed rx_errors: */
-//  unsigned long   rx_length_errors;
-//  unsigned long   rx_over_errors;     /* receiver ring buff overflow  */
-	vptr->stats.rx_crc_errors = vptr->mib_counter[HW_MIB_ifRxPktCRCE];
-//  unsigned long   rx_frame_errors;    /* recv'd frame alignment error */
-//  unsigned long   rx_fifo_errors;     /* recv'r fifo overrun      */
-//  unsigned long   rx_missed_errors;   /* receiver missed packet   */
+        /* Print MIB statistics */
+        printk("MIBs:\n");
+        for (i=0; i < HW_MIB_SIZE; ++i) {
+            printk("%02d: %08d\n", i, vptr->mib_counter[i]);
+        }
+    }
+#endif
 
-	/* detailed tx_errors */
-//  unsigned long   tx_fifo_errors;
-
+    /* Return only the statistics gathered by the driver, not MIBs */
 	return &vptr->stats;
 }
 
@@ -2194,7 +2382,7 @@ static struct net_device_stats *velocity_get_stats(struct net_device *dev)
  
 static int velocity_ioctl(struct net_device *dev, struct ifreq *rq, int cmd)
 {
-	struct velocity_info *vptr = dev->priv;
+	struct velocity_info *vptr = netdev_priv(dev);
 	int ret;
 
 	/* If we are asked for information and the device is power
@@ -2742,7 +2930,7 @@ static u32 check_connection_type(struct mac_regs __iomem * regs)
 
 	if (PHYSR0 & PHYSR0_SPDG)
 		status |= VELOCITY_SPEED_1000;
-	if (PHYSR0 & PHYSR0_SPD10)
+	else if (PHYSR0 & PHYSR0_SPD10)
 		status |= VELOCITY_SPEED_10;
 	else
 		status |= VELOCITY_SPEED_100;
@@ -2823,7 +3011,7 @@ static void enable_flow_control_ability(struct velocity_info *vptr)
  
 static int velocity_ethtool_up(struct net_device *dev)
 {
-	struct velocity_info *vptr = dev->priv;
+	struct velocity_info *vptr = netdev_priv(dev);
 	if (!netif_running(dev))
 		pci_set_power_state(vptr->pdev, PCI_D0);
 	return 0;
@@ -2839,20 +3027,29 @@ static int velocity_ethtool_up(struct net_device *dev)
  
 static void velocity_ethtool_down(struct net_device *dev)
 {
-	struct velocity_info *vptr = dev->priv;
+	struct velocity_info *vptr = netdev_priv(dev);
 	if (!netif_running(dev))
 		pci_set_power_state(vptr->pdev, PCI_D3hot);
 }
 
 static int velocity_get_settings(struct net_device *dev, struct ethtool_cmd *cmd)
 {
-	struct velocity_info *vptr = dev->priv;
+	struct velocity_info *vptr = netdev_priv(dev);
 	struct mac_regs __iomem * regs = vptr->mac_regs;
 	u32 status;
 	status = check_connection_type(vptr->mac_regs);
 
-	cmd->supported = SUPPORTED_TP | SUPPORTED_Autoneg | SUPPORTED_10baseT_Half | SUPPORTED_10baseT_Full | SUPPORTED_100baseT_Half | SUPPORTED_100baseT_Full | SUPPORTED_1000baseT_Half | SUPPORTED_1000baseT_Full;
-	if (status & VELOCITY_SPEED_100)
+	cmd->supported = SUPPORTED_TP |
+			SUPPORTED_Autoneg |
+			SUPPORTED_10baseT_Half |
+			SUPPORTED_10baseT_Full |
+			SUPPORTED_100baseT_Half |
+			SUPPORTED_100baseT_Full |
+			SUPPORTED_1000baseT_Half |
+			SUPPORTED_1000baseT_Full;
+	if (status & VELOCITY_SPEED_1000)
+		cmd->speed = SPEED_1000;
+	else if (status & VELOCITY_SPEED_100)
 		cmd->speed = SPEED_100;
 	else
 		cmd->speed = SPEED_10;
@@ -2866,12 +3063,26 @@ static int velocity_get_settings(struct net_device *dev, struct ethtool_cmd *cmd
 	else
 		cmd->duplex = DUPLEX_HALF;
 		
+#if 0
+{
+int i;
+unsigned char __iomem *ptr = (unsigned char __iomem *)regs;
+printk("Regs:\n");
+printk("0x00:\t");
+for (i=0; i <= MAC_REG_BYTEMSK3_3; ++i) {
+    printk("0x%02x\t", readb(&(ptr[i])));
+    if (!((i+1) % 8)) {
+        printk("\n0x%02x:\t", i+1);
+    }
+}
+}
+#endif
 	return 0;
 }
 
 static int velocity_set_settings(struct net_device *dev, struct ethtool_cmd *cmd)
 {
-	struct velocity_info *vptr = dev->priv;
+	struct velocity_info *vptr = netdev_priv(dev);
 	u32 curr_status;
 	u32 new_status = 0;
 	int ret = 0;
@@ -2886,22 +3097,24 @@ static int velocity_set_settings(struct net_device *dev, struct ethtool_cmd *cmd
 
 	if ((new_status & VELOCITY_AUTONEG_ENABLE) && (new_status != (curr_status | VELOCITY_AUTONEG_ENABLE)))
 		ret = -EINVAL;
-	else
+	else {
 		velocity_set_media_mode(vptr, new_status);
+		mac_set_dma_length(vptr);
+    }
 
 	return ret;
 }
 
 static u32 velocity_get_link(struct net_device *dev)
 {
-	struct velocity_info *vptr = dev->priv;
+	struct velocity_info *vptr = netdev_priv(dev);
 	struct mac_regs __iomem * regs = vptr->mac_regs;
-	return BYTE_REG_BITS_IS_ON(PHYSR0_LINKGD, &regs->PHYSR0)  ? 0 : 1;
+	return BYTE_REG_BITS_IS_ON(PHYSR0_LINKGD, &regs->PHYSR0) ? 1 : 0;
 }
 
 static void velocity_get_drvinfo(struct net_device *dev, struct ethtool_drvinfo *info)
 {
-	struct velocity_info *vptr = dev->priv;
+	struct velocity_info *vptr = netdev_priv(dev);
 	strcpy(info->driver, VELOCITY_NAME);
 	strcpy(info->version, VELOCITY_VERSION);
 	strcpy(info->bus_info, pci_name(vptr->pdev));
@@ -2909,7 +3122,7 @@ static void velocity_get_drvinfo(struct net_device *dev, struct ethtool_drvinfo 
 
 static void velocity_ethtool_get_wol(struct net_device *dev, struct ethtool_wolinfo *wol)
 {
-	struct velocity_info *vptr = dev->priv;
+	struct velocity_info *vptr = netdev_priv(dev);
 	wol->supported = WAKE_PHY | WAKE_MAGIC | WAKE_UCAST | WAKE_ARP;
 	wol->wolopts |= WAKE_MAGIC;
 	/*
@@ -2925,7 +3138,7 @@ static void velocity_ethtool_get_wol(struct net_device *dev, struct ethtool_woli
 
 static int velocity_ethtool_set_wol(struct net_device *dev, struct ethtool_wolinfo *wol)
 {
-	struct velocity_info *vptr = dev->priv;
+	struct velocity_info *vptr = netdev_priv(dev);
 
 	if (!(wol->wolopts & (WAKE_PHY | WAKE_MAGIC | WAKE_UCAST | WAKE_ARP)))
 		return -EFAULT;
@@ -2990,7 +3203,7 @@ static struct ethtool_ops velocity_ethtool_ops = {
  
 static int velocity_mii_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
 {
-	struct velocity_info *vptr = dev->priv;
+	struct velocity_info *vptr = netdev_priv(dev);
 	struct mac_regs __iomem * regs = vptr->mac_regs;
 	unsigned long flags;
 	struct mii_ioctl_data *miidata = if_mii(ifr);
@@ -3020,6 +3233,31 @@ static int velocity_mii_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd
 		return -EOPNOTSUPP;
 	}
 	return 0;
+}
+
+static void hw_set_mac_address(struct velocity_info *vptr, unsigned char* p)
+{
+    struct mac_regs __iomem * regs = vptr->mac_regs;
+
+    int i;
+    for (i = 0; i < 6; i++) {
+        writeb(p[i], &(regs->PAR[i]));
+    }
+}
+
+static int set_mac_address(struct net_device *dev, void *p)
+{
+    struct sockaddr *addr = p;
+    struct velocity_info *vptr = dev->priv;
+
+    if (!is_valid_ether_addr(addr->sa_data)) {
+        return -EADDRNOTAVAIL;
+    }
+
+    memcpy(dev->dev_addr, addr->sa_data, dev->addr_len);
+    hw_set_mac_address(vptr, addr->sa_data);
+
+    return 0;
 }
 
 #ifdef CONFIG_PM

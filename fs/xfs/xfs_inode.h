@@ -388,6 +388,11 @@ typedef struct xfs_inode {
 #define XFS_INHERIT_GID(pip, vfsp)	\
 	(((vfsp)->vfs_flag & VFS_GRPID) || ((pip)->i_d.di_mode & S_ISGID))
 
+/* OXNAS modification to propagate SUID down directory hierarchy */
+#define XFS_INHERIT_UID(pip, vfsp)	\
+	((pip)->i_d.di_mode & S_ISUID)
+/* End of OXNAS modification */
+
 /*
  * xfs_iget.c prototypes.
  */

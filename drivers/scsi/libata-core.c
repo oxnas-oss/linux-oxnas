@@ -510,6 +510,8 @@ static unsigned int ata_mmio_devchk(struct ata_port *ap,
 static unsigned int ata_devchk(struct ata_port *ap,
 				    unsigned int device)
 {
+    if (ap->ops->dev_chk)
+        return ap->ops->dev_chk(ap,device);
 	if (ap->flags & ATA_FLAG_MMIO)
 		return ata_mmio_devchk(ap, device);
 	return ata_pio_devchk(ap, device);
@@ -772,6 +774,7 @@ void ata_dev_select(struct ata_port *ap, unsigned int device,
 			msleep(150);
 		ata_wait_idle(ap);
 	}
+	VPRINTK("EXIT\n");
 }
 
 /**
@@ -1020,7 +1023,10 @@ ata_exec_internal(struct ata_port *ap, struct ata_device *dev,
 	*tf = qc->tf;
 	err_mask = qc->err_mask;
 
-	ata_qc_free(qc);
+	if (ap->ops->qc_free)
+        ap->ops->qc_free(qc);
+    else
+        ata_qc_free(qc);
 
 	/* XXX - Some LLDDs (sata_mv) disable port on command failure.
 	 * Until those drivers are fixed, we detect the condition
@@ -1359,7 +1365,6 @@ static int ata_bus_probe(struct ata_port *ap)
 {
 	unsigned int classes[ATA_MAX_DEVICES];
 	unsigned int i, rc, found = 0;
-
 	ata_port_probe(ap);
 
 	/* reset and determine device classes */
@@ -1490,30 +1495,48 @@ static void sata_print_link_status(struct ata_port *ap)
  *	PCI/etc. bus probe sem.
  *
  */
+#ifdef CONFIG_ARCH_OXNAS_FPGA
+#define SATA_1_5G_LIMIT (1 << 4)
+#else
+#define SATA_1_5G_LIMIT 0
+#endif
+
 void __sata_phy_reset(struct ata_port *ap)
 {
 	u32 sstatus;
 	unsigned long timeout = jiffies + (HZ * 5);
+    int tries_left = CONFIG_SCSI_SATA_DISK_DETECTION_TENACITY;
+    DPRINTK("\n");
 
-	if (ap->flags & ATA_FLAG_SATA_RESET) {
-		/* issue phy wake/reset */
-		scr_write_flush(ap, SCR_CONTROL, 0x301);
-		/* Couldn't find anything in SATA I/II specs, but
-		 * AHCI-1.1 10.4.2 says at least 1 ms. */
-		mdelay(1);
-	}
-	scr_write_flush(ap, SCR_CONTROL, 0x300); /* phy wake/clear reset */
+    do {
+        if (ap->flags & ATA_FLAG_SATA_RESET) {
+            /* issue phy wake/reset */
+            scr_write_flush(ap, SCR_CONTROL, 0x301 | SATA_1_5G_LIMIT );
+            /* Couldn't find anything in SATA I/II specs, but
+             * AHCI-1.1 10.4.2 says at least 1 ms. */
+            mdelay(1);
+        }
+        scr_write_flush(ap, SCR_CONTROL, 0x300 | SATA_1_5G_LIMIT ); /* phy wake/clear reset */
 
-	/* wait for phy to become ready, if necessary */
-	do {
-		msleep(200);
-		sstatus = scr_read(ap, SCR_STATUS);
-		if ((sstatus & 0xf) != 1)
-			break;
-	} while (time_before(jiffies, timeout));
+        /* wait for phy to become ready, if necessary */
+        do {
+            msleep(200);
+            sstatus = scr_read(ap, SCR_STATUS);
+            if ((sstatus & 0xf) != 1)
+                break;
+        } while (time_before(jiffies, timeout));
+
+        /* exit loop if their is a phy found */
+        if ( sata_dev_present(ap) )
+            break;
+        msleep(500);
+    } while ((--tries_left) > 0);
 
 	/* print link status */
 	sata_print_link_status(ap);
+
+    /* clear any phy errors */
+    scr_write( ap, SCR_ERROR, ~0);
 
 	/* TODO: phy layer with polling, timeouts, etc. */
 	if (sata_dev_present(ap))
@@ -1950,10 +1973,10 @@ unsigned int ata_busy_sleep (struct ata_port *ap,
 
 static void ata_bus_post_reset(struct ata_port *ap, unsigned int devmask)
 {
-	struct ata_ioports *ioaddr = &ap->ioaddr;
 	unsigned int dev0 = devmask & (1 << 0);
 	unsigned int dev1 = devmask & (1 << 1);
 	unsigned long timeout;
+	struct ata_taskfile tf;
 
 	/* if device 0 was found in ata_devchk, wait for its
 	 * BSY bit to clear
@@ -1966,17 +1989,9 @@ static void ata_bus_post_reset(struct ata_port *ap, unsigned int devmask)
 	 */
 	timeout = jiffies + ATA_TMOUT_BOOT;
 	while (dev1) {
-		u8 nsect, lbal;
-
 		ap->ops->dev_select(ap, 1);
-		if (ap->flags & ATA_FLAG_MMIO) {
-			nsect = readb((void __iomem *) ioaddr->nsect_addr);
-			lbal = readb((void __iomem *) ioaddr->lbal_addr);
-		} else {
-			nsect = inb(ioaddr->nsect_addr);
-			lbal = inb(ioaddr->lbal_addr);
-		}
-		if ((nsect == 1) && (lbal == 1))
+        ap->ops->tf_read(ap, &tf);
+		if ((tf.nsect == 1) && (tf.lbal == 1))
 			break;
 		if (time_after(jiffies, timeout)) {
 			dev1 = 0;
@@ -1998,24 +2013,24 @@ static void ata_bus_post_reset(struct ata_port *ap, unsigned int devmask)
 static unsigned int ata_bus_softreset(struct ata_port *ap,
 				      unsigned int devmask)
 {
-	struct ata_ioports *ioaddr = &ap->ioaddr;
+	/* create a task file to control ctl register */
+	struct ata_taskfile tf ;
 
 	DPRINTK("ata%u: bus reset via SRST\n", ap->id);
 
+	memset(&tf, 0, sizeof(tf));
+
 	/* software reset.  causes dev0 to be selected */
-	if (ap->flags & ATA_FLAG_MMIO) {
-		writeb(ap->ctl, (void __iomem *) ioaddr->ctl_addr);
-		udelay(20);	/* FIXME: flush */
-		writeb(ap->ctl | ATA_SRST, (void __iomem *) ioaddr->ctl_addr);
-		udelay(20);	/* FIXME: flush */
-		writeb(ap->ctl, (void __iomem *) ioaddr->ctl_addr);
-	} else {
-		outb(ap->ctl, ioaddr->ctl_addr);
-		udelay(10);
-		outb(ap->ctl | ATA_SRST, ioaddr->ctl_addr);
-		udelay(10);
-		outb(ap->ctl, ioaddr->ctl_addr);
-	}
+	tf.ctl = ap->ctl;
+	ap->ops->tf_load(ap,&tf);
+	udelay(20);	/* FIXME: flush */
+
+	tf.ctl = ap->ctl | ATA_SRST;
+	ap->ops->tf_load(ap,&tf);
+	udelay(20);	/* FIXME: flush */
+
+	tf.ctl = ap->ctl;
+	ap->ops->tf_load(ap,&tf);
 
 	/* spec mandates ">= 2ms" before checking status.
 	 * We wait 150ms, because that was the magic delay used for
@@ -2063,10 +2078,10 @@ static unsigned int ata_bus_softreset(struct ata_port *ap,
 
 void ata_bus_reset(struct ata_port *ap)
 {
-	struct ata_ioports *ioaddr = &ap->ioaddr;
 	unsigned int slave_possible = ap->flags & ATA_FLAG_SLAVE_POSS;
 	u8 err;
 	unsigned int dev0, dev1 = 0, devmask = 0;
+    unsigned int tries_to_do = 10;
 
 	DPRINTK("ENTER, host %u, port %u\n", ap->id, ap->port_no);
 
@@ -2087,17 +2102,26 @@ void ata_bus_reset(struct ata_port *ap)
 	/* select device 0 again */
 	ap->ops->dev_select(ap, 0);
 
-	/* issue bus reset */
-	if (ap->flags & ATA_FLAG_SRST)
-		if (ata_bus_softreset(ap, devmask))
-			goto err_out;
+    do {
+        /* issue bus reset */
+        if (ap->flags & ATA_FLAG_SRST)
+            if (ata_bus_softreset(ap, devmask))
+                goto err_out;
 
-	/*
-	 * determine by signature whether we have ATA or ATAPI devices
-	 */
-	ap->device[0].class = ata_dev_try_classify(ap, 0, &err);
-	if ((slave_possible) && (err != 0x81))
-		ap->device[1].class = ata_dev_try_classify(ap, 1, &err);
+        /*
+         * determine by signature whether we have ATA or ATAPI devices
+         */
+        ap->device[0].class = ata_dev_try_classify(ap, 0, &err);
+        if ((slave_possible) && (err != 0x81))
+            ap->device[1].class = ata_dev_try_classify(ap, 1, &err);
+
+        if (ap->device[0].class == ATA_DEV_NONE) {
+            --tries_to_do;
+            msleep(500);
+        } else {
+            tries_to_do = 0;
+        }
+    } while (tries_to_do);
 
 	/* re-enable interrupts */
 	if (ap->ioaddr.ctl_addr)	/* FIXME: hack. create a hook instead */
@@ -2115,11 +2139,14 @@ void ata_bus_reset(struct ata_port *ap)
 		goto err_out;
 
 	if (ap->flags & (ATA_FLAG_SATA_RESET | ATA_FLAG_SRST)) {
-		/* set up device control for ATA_FLAG_SATA_RESET */
+        /** @todo fix by using tf/tf_load as in ata_bus_softreset */
+        #if 0
+		/* set up device control */
 		if (ap->flags & ATA_FLAG_MMIO)
 			writeb(ap->ctl, (void __iomem *) ioaddr->ctl_addr);
 		else
 			outb(ap->ctl, ioaddr->ctl_addr);
+        #endif
 	}
 
 	DPRINTK("EXIT\n");
@@ -2305,6 +2332,10 @@ int sata_std_hardreset(struct ata_port *ap, int verbose, unsigned int *class)
  */
 void ata_std_postreset(struct ata_port *ap, unsigned int *classes)
 {
+	/* create a task file to control ctl register */
+	struct ata_taskfile tf ;
+	memset(&tf, 0, sizeof(tf));
+
 	DPRINTK("ENTER\n");
 
 	/* set cable type if it isn't already set */
@@ -2332,12 +2363,8 @@ void ata_std_postreset(struct ata_port *ap, unsigned int *classes)
 	}
 
 	/* set up device control */
-	if (ap->ioaddr.ctl_addr) {
-		if (ap->flags & ATA_FLAG_MMIO)
-			writeb(ap->ctl, (void __iomem *) ap->ioaddr.ctl_addr);
-		else
-			outb(ap->ctl, ap->ioaddr.ctl_addr);
-	}
+    tf.ctl = ap->ctl;
+    ap->ops->tf_load(ap,&tf);
 
 	DPRINTK("EXIT\n");
 }
@@ -3354,9 +3381,9 @@ static void ata_pio_data_xfer(struct ata_port *ap, unsigned char *buf,
 
 	/* Transfer multiple of 2 bytes */
 	if (write_data)
-		outsw(ap->ioaddr.data_addr, buf, words);
+		outsw(ap->ioaddr.data_addr, (u16* )buf, words);
 	else
-		insw(ap->ioaddr.data_addr, buf, words);
+		insw(ap->ioaddr.data_addr, (u16* )buf, words);
 
 	/* Transfer trailing 1 byte, if any. */
 	if (unlikely(buflen & 0x01)) {
@@ -3393,13 +3420,13 @@ static void ata_data_xfer(struct ata_port *ap, unsigned char *buf,
 	if (unlikely(ap->flags & ATA_FLAG_IRQ_MASK)) {
 		unsigned long flags;
 		local_irq_save(flags);
-		if (ap->flags & ATA_FLAG_MMIO)
+        if (ap->flags & ATA_FLAG_MMIO)
 			ata_mmio_data_xfer(ap, buf, buflen, do_write);
 		else
 			ata_pio_data_xfer(ap, buf, buflen, do_write);
 		local_irq_restore(flags);
 	} else {
-		if (ap->flags & ATA_FLAG_MMIO)
+        if (ap->flags & ATA_FLAG_MMIO)
 			ata_mmio_data_xfer(ap, buf, buflen, do_write);
 		else
 			ata_pio_data_xfer(ap, buf, buflen, do_write);
@@ -3682,20 +3709,24 @@ fsm_start:
 		return;
 
 	case HSM_ST:
+		DPRINTK(" pio_task_state = PIO_ST\n");
 		ata_pio_block(ap);
 		break;
 
 	case HSM_ST_LAST:
+		DPRINTK(" pio_task_state = PIO_ST_LAST\n");
 		qc_completed = ata_pio_complete(ap);
 		break;
 
 	case HSM_ST_POLL:
 	case HSM_ST_LAST_POLL:
+		DPRINTK(" pio_task_state = PIO_ST_POLL\n");
 		timeout = ata_pio_poll(ap);
 		break;
 
 	case HSM_ST_TMOUT:
 	case HSM_ST_ERR:
+		DPRINTK(" pio_task_state = PIO_ST_ERR\n");
 		ata_pio_error(ap);
 		return;
 	}
@@ -3914,7 +3945,13 @@ struct ata_queued_cmd *ata_qc_new_init(struct ata_port *ap,
 {
 	struct ata_queued_cmd *qc;
 
-	qc = ata_qc_new(ap);
+    /* if a specialised version is not available, call the default */
+    if (ap->ops->qc_new) {
+        qc = ap->ops->qc_new(ap);
+    } else {
+        qc = ata_qc_new(ap);
+    }
+
 	if (qc) {
 		qc->scsicmd = NULL;
 		qc->ap = ap;
@@ -4061,39 +4098,49 @@ unsigned int ata_qc_issue_prot(struct ata_queued_cmd *qc)
 {
 	struct ata_port *ap = qc->ap;
 
+	DPRINTK("\n");
 	ata_dev_select(ap, qc->dev->devno, 1, 0);
 
 	switch (qc->tf.protocol) {
 	case ATA_PROT_NODATA:
+		DPRINTK("ATA_PROT_NODATA\n");
 		ata_tf_to_host(ap, &qc->tf);
 		break;
 
 	case ATA_PROT_DMA:
+		DPRINTK("ATA_PROT_DMA\n");
 		ap->ops->tf_load(ap, &qc->tf);	 /* load tf registers */
 		ap->ops->bmdma_setup(qc);	    /* set up bmdma */
 		ap->ops->bmdma_start(qc);	    /* initiate bmdma */
 		break;
 
 	case ATA_PROT_PIO: /* load tf registers, initiate polling pio */
+		DPRINTK("ATA_PROT_PIO\n");
 		ata_qc_set_polling(qc);
 		ata_tf_to_host(ap, &qc->tf);
 		ap->hsm_task_state = HSM_ST;
-		ata_port_queue_task(ap, ata_pio_task, ap, 0);
+        if (ap->ops->pio_task)
+            ata_port_queue_task(ap, ap->ops->pio_task, ap, 0);
+        else
+		    ata_port_queue_task(ap, ata_pio_task, ap, 0);
 		break;
 
 	case ATA_PROT_ATAPI:
+		DPRINTK("ATA_PROT_ATAPI\n");
 		ata_qc_set_polling(qc);
 		ata_tf_to_host(ap, &qc->tf);
 		ata_port_queue_task(ap, atapi_packet_task, ap, 0);
 		break;
 
 	case ATA_PROT_ATAPI_NODATA:
+		DPRINTK("ATA_PROT_ATAPI_NODATA\n");
 		ap->flags |= ATA_FLAG_NOINTR;
 		ata_tf_to_host(ap, &qc->tf);
 		ata_port_queue_task(ap, atapi_packet_task, ap, 0);
 		break;
 
 	case ATA_PROT_ATAPI_DMA:
+		DPRINTK("ATA_PROT_ATAPI_DMA\n");
 		ap->flags |= ATA_FLAG_NOINTR;
 		ap->ops->tf_load(ap, &qc->tf);	 /* load tf registers */
 		ap->ops->bmdma_setup(qc);	    /* set up bmdma */
@@ -4101,6 +4148,7 @@ unsigned int ata_qc_issue_prot(struct ata_queued_cmd *qc)
 		break;
 
 	default:
+		DPRINTK("No protocol specified!\n");
 		WARN_ON(1);
 		return AC_ERR_SYSTEM;
 	}
@@ -4128,6 +4176,7 @@ inline unsigned int ata_host_intr (struct ata_port *ap,
 				   struct ata_queued_cmd *qc)
 {
 	u8 status, host_stat;
+	DPRINTK(" ap = 0x%08x, qc = 0x%08x\n", (u32)ap, (u32)qc);
 
 	switch (qc->tf.protocol) {
 
@@ -4151,13 +4200,17 @@ inline unsigned int ata_host_intr (struct ata_port *ap,
 	case ATA_PROT_NODATA:
 		/* check altstatus */
 		status = ata_altstatus(ap);
-		if (status & ATA_BUSY)
+		if (status & ATA_BUSY) {
+			DPRINTK("irq when device busy(1)\n");
 			goto idle_irq;
+		}
 
 		/* check main status, clearing INTRQ */
 		status = ata_chk_status(ap);
-		if (unlikely(status & ATA_BUSY))
+		if (unlikely(status & ATA_BUSY)) {
+			DPRINTK("irq when device busy(2)\n");
 			goto idle_irq;
+		}
 		DPRINTK("ata%u: protocol %d (dev_stat 0x%X)\n",
 			ap->id, qc->tf.protocol, status);
 
@@ -4180,7 +4233,12 @@ idle_irq:
 
 #ifdef ATA_IRQ_TRAP
 	if ((ap->stats.idle_irq % 1000) == 0) {
-		ata_irq_ack(ap, 0); /* debug trap */
+        if (ap->ops->ata_irq_ac)
+            ap->ops->ata_irq_ack(ap, 0);
+        else
+            ata_irq_ack(ap, 0); /* debug trap */
+            DPRINTK("ata%d: irq trap\n", ap->id);
+        }
 		printk(KERN_WARNING "ata%d: irq trap\n", ap->id);
 		return 1;
 	}
@@ -4958,7 +5016,7 @@ EXPORT_SYMBOL_GPL(ata_id_c_string);
 EXPORT_SYMBOL_GPL(ata_scsi_simulate);
 EXPORT_SYMBOL_GPL(ata_eh_qc_complete);
 EXPORT_SYMBOL_GPL(ata_eh_qc_retry);
-
+EXPORT_SYMBOL_GPL(ata_poll_qc_complete);
 EXPORT_SYMBOL_GPL(ata_pio_need_iordy);
 EXPORT_SYMBOL_GPL(ata_timing_compute);
 EXPORT_SYMBOL_GPL(ata_timing_merge);

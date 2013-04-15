@@ -406,32 +406,59 @@ struct lo_read_data {
 };
 
 static int
-lo_read_actor(read_descriptor_t *desc, struct page *page,
+lo_read_actor(read_descriptor_t *desc, struct page **page,
 	      unsigned long offset, unsigned long size)
 {
 	unsigned long count = desc->count;
 	struct lo_read_data *p = desc->arg.data;
 	struct loop_device *lo = p->lo;
-	sector_t IV;
 
-	IV = ((sector_t) page->index << (PAGE_CACHE_SHIFT - 9))+(offset >> 9);
+    unsigned long ret_size;
 
 	if (size > count)
 		size = count;
 
-	if (lo_do_transfer(lo, READ, page, offset, p->page, p->offset, size, IV)) {
-		size = 0;
-		printk(KERN_ERR "loop: transfer error block %ld\n",
-		       page->index);
-		desc->error = -EINVAL;
-	}
+    ret_size = size;
 
-	flush_dcache_page(p->page);
+    /*
+     *  We receive single pages from the bio_vec segment. However, the incoming
+     *  page vector (page) may have a non-zero offset and be upto a full page length.
+     *  So, we have to go upto the page boundary and then transfer the remainder from
+     *  the next page.
+     */
+    while(size)
+    {
+        sector_t IV;
+        unsigned long psize = PAGE_CACHE_SIZE - offset;
+        struct page *page_it;
 
-	desc->count = count - size;
-	desc->written += size;
-	p->offset += size;
-	return size;
+        if (size <= psize) {
+            psize = size;
+        }
+
+        page_it = *page;
+        IV = ((sector_t) page_it->index << (PAGE_CACHE_SHIFT - 9))+(offset >> 9);
+
+        if (lo_do_transfer(lo, READ, page_it, offset, p->page, p->offset, psize, IV)) {
+            size = 0;
+            printk(KERN_ERR "loop: transfer error block %ld\n",
+                   page_it->index);
+            desc->error = -EINVAL;
+            break;
+        }
+
+        size -= psize;
+        page++;
+        offset += psize;
+        offset &= (PAGE_CACHE_SIZE - 1);
+        p->offset += psize;
+    }
+
+    flush_dcache_page(p->page);
+
+	desc->count = count - ret_size;
+	desc->written += ret_size;
+	return ret_size;
 }
 
 static int

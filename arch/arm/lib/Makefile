@@ -28,6 +28,10 @@ else
 endif
 endif
 
+ifeq ($(CONFIG_OXNAS_DMA_COPIES),y)
+  lib-y	+= oxnas_copies.o
+endif
+
 ifeq ($(CONFIG_CPU_32v3),y)
   lib-y	+= io-readsw-armv3.o io-writesw-armv3.o
 else

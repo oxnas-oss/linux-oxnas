@@ -480,6 +480,15 @@ config SCSI_SATA
 
 	  If unsure, say N.
 
+config SCSI_SATA_DISK_DETECTION_TENACITY
+    int "The number of attempts to detect a disk."
+    default 1
+	depends SCSI_SATA
+	help
+	  Sets the number of times taken to repeat a 700 ms process of detecting a disk. Some disks will not respond to detection until they have spun-up and they won't spin-up untill they receive some communication from the host.
+
+	  If unsure, use 1.
+
 config SCSI_SATA_AHCI
 	tristate "AHCI SATA support"
 	depends on SCSI_SATA && PCI
@@ -603,6 +612,43 @@ config SCSI_SATA_VITESSE
 	  This option enables support for Vitesse VSC7174 and Intel 31244 Serial ATA.
 
 	  If unsure, say N.
+
+config SCSI_OX800SATA
+    tristate "driver for the NAS 924 based sata core"
+    depends on ARCH_OXNAS && SCSI_SATA
+	help
+	  This option enables support for the 924 based sata core
+
+    default n
+
+config SCSI_OX810SATA
+    tristate "driver for the NAS 934 based sata core"
+    depends on ARCH_OXNAS && SCSI_SATA
+	help
+	  This option enables support for the 934 based sata core
+
+    default n
+
+config OX800SATA_DISK_LIGHT
+	bool "Whether to use a GPIO as a disk activity light"
+    depends on (SCSI_OX800SATA || SCSI_OX810SATA) && SCSI_SATA
+	default n
+
+config OX800SATA_DISK_LIGHT_GPIO_LINE
+    int  "GPIO line of the disk light"
+	depends OX800SATA_DISK_LIGHT && SCSI_SATA
+    default 29
+	help
+	  Selects the GPIO line of the disk activity light.
+
+config OX800SATA_SINGLE_SATA
+    bool "Force the OX800 to only use one SATA port"
+    depends on (SCSI_OX800SATA || SCSI_OX810SATA) && SCSI_SATA
+    default n
+    help
+      Prevents the ox800sata module from registering its second sata port, this
+      reduces startup time on systems where only one port is physically present
+      on the board/chip periphery.
 
 config SCSI_SATA_INTEL_COMBINED
 	bool
@@ -1828,7 +1874,6 @@ config ZFCP
           This driver is also available as a module. This module will be
           called zfcp. If you want to compile it as a module, say M here
           and read <file:Documentation/modules.txt>.
-
 endmenu
 
 source "drivers/scsi/pcmcia/Kconfig"

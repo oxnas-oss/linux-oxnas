@@ -343,8 +343,9 @@ struct ata_queued_cmd *ata_scsi_qc_new(struct ata_port *ap,
 			qc->n_elem = 1;
 		}
 	} else {
+		DPRINTK(" No ata_queued_cmd structures available\n");
 		cmd->result = (DID_OK << 16) | (QUEUE_FULL << 1);
-		done(cmd);
+//		done(cmd);
 	}
 
 	return qc;
@@ -1363,7 +1364,10 @@ static void ata_scsi_qc_complete(struct ata_queued_cmd *qc)
 
 	qc->scsidone(cmd);
 
-	ata_qc_free(qc);
+	if (qc->ap->ops->qc_free)
+        qc->ap->ops->qc_free(qc);
+    else
+        ata_qc_free(qc);
 }
 
 /**
@@ -1391,7 +1395,7 @@ static void ata_scsi_qc_complete(struct ata_queued_cmd *qc)
  *	spin_lock_irqsave(host_set lock)
  */
 
-static void ata_scsi_translate(struct ata_port *ap, struct ata_device *dev,
+static int ata_scsi_translate(struct ata_port *ap, struct ata_device *dev,
 			      struct scsi_cmnd *cmd,
 			      void (*done)(struct scsi_cmnd *),
 			      ata_xlat_func_t xlat_func)
@@ -1402,8 +1406,10 @@ static void ata_scsi_translate(struct ata_port *ap, struct ata_device *dev,
 	VPRINTK("ENTER\n");
 
 	qc = ata_scsi_qc_new(ap, dev, cmd, done);
-	if (!qc)
-		goto err_mem;
+	if (!qc) {
+		DPRINTK(" Failed to queue new command\n");
+        return 1;
+	}
 
 	/* data is present; dma-map it */
 	if (cmd->sc_data_direction == DMA_FROM_DEVICE ||
@@ -1432,21 +1438,26 @@ static void ata_scsi_translate(struct ata_port *ap, struct ata_device *dev,
 	ata_qc_issue(qc);
 
 	VPRINTK("EXIT\n");
-	return;
+	return 0;
 
 early_finish:
+	if (ap->ops->qc_free)
+        ap->ops->qc_free(qc);
+    else
         ata_qc_free(qc);
 	done(cmd);
 	DPRINTK("EXIT - early finish (good or error)\n");
-	return;
+	return 0;
 
 err_did:
-	ata_qc_free(qc);
-err_mem:
+	if (ap->ops->qc_free)
+        ap->ops->qc_free(qc);
+    else
+        ata_qc_free(qc);
 	cmd->result = (DID_ERROR << 16);
 	done(cmd);
 	DPRINTK("EXIT - internal\n");
-	return;
+	return 1;
 }
 
 /**
@@ -1978,18 +1989,20 @@ unsigned int ata_scsiop_mode_sense(struct ata_scsi_args *args, u8 *rbuf,
 	return 0;
 
 invalid_fld:
+    VPRINTK("EXIT invalid_fld\n");
 	ata_scsi_set_sense(args->cmd, ILLEGAL_REQUEST, 0x24, 0x0);
 	/* "Invalid field in cbd" */
 	return 1;
 
 saving_not_supp:
+    VPRINTK("EXIT saving_not_supp\n");
 	ata_scsi_set_sense(args->cmd, ILLEGAL_REQUEST, 0x39, 0x0);
 	 /* "Saving parameters not supported" */
 	return 1;
 }
 
 /**
- *	ata_scsiop_read_cap - Simulate READ CAPACITY[ 16] commands
+L *	ata_scsiop_read_cap - Simulate READ CAPACITY[ 16] commands
  *	@args: device IDENTIFY data / SCSI command of interest.
  *	@rbuf: Response buffer, to which simulated SCSI cmd output is sent.
  *	@buflen: Response buffer length.
@@ -2146,7 +2159,10 @@ static void atapi_sense_complete(struct ata_queued_cmd *qc)
 		ata_gen_ata_desc_sense(qc);
 
 	qc->scsidone(qc->scsicmd);
-	ata_qc_free(qc);
+	if (qc->ap->ops->qc_free)
+        qc->ap->ops->qc_free(qc);
+    else
+        ata_qc_free(qc);
 }
 
 /* is it pointless to prefer PIO for "safety reasons"? */
@@ -2250,7 +2266,10 @@ static void atapi_qc_complete(struct ata_queued_cmd *qc)
 	}
 
 	qc->scsidone(cmd);
-	ata_qc_free(qc);
+	if (qc->ap->ops->qc_free)
+        qc->ap->ops->qc_free(qc);
+    else
+        ata_qc_free(qc);
 }
 /**
  *	atapi_xlat - Initialize PACKET taskfile
@@ -2578,19 +2597,23 @@ static inline void ata_scsi_dump_cdb(struct ata_port *ap,
 #endif
 }
 
-static inline void __ata_scsi_queuecmd(struct scsi_cmnd *cmd, void (*done)(struct scsi_cmnd *),
+static inline int __ata_scsi_queuecmd(struct scsi_cmnd *cmd, void (*done)(struct scsi_cmnd *),
 				       struct ata_port *ap, struct ata_device *dev)
 {
+    int result = 0;
+
 	if (dev->class == ATA_DEV_ATA) {
 		ata_xlat_func_t xlat_func = ata_get_xlat_func(dev,
 							      cmd->cmnd[0]);
 
 		if (xlat_func)
-			ata_scsi_translate(ap, dev, cmd, done, xlat_func);
+			result = ata_scsi_translate(ap, dev, cmd, done, xlat_func);
 		else
 			ata_scsi_simulate(ap, dev, cmd, done);
 	} else
-		ata_scsi_translate(ap, dev, cmd, done, atapi_xlat);
+		result = ata_scsi_translate(ap, dev, cmd, done, atapi_xlat);
+
+    return result;
 }
 
 /**
@@ -2618,6 +2641,7 @@ int ata_scsi_queuecmd(struct scsi_cmnd *cmd, void (*done)(struct scsi_cmnd *))
 	struct ata_device *dev;
 	struct scsi_device *scsidev = cmd->device;
 	struct Scsi_Host *shost = scsidev->host;
+    int result = 0;
 
 	ap = (struct ata_port *) &shost->hostdata[0];
 
@@ -2628,7 +2652,7 @@ int ata_scsi_queuecmd(struct scsi_cmnd *cmd, void (*done)(struct scsi_cmnd *))
 
 	dev = ata_scsi_find_dev(ap, scsidev);
 	if (likely(dev))
-		__ata_scsi_queuecmd(cmd, done, ap, dev);
+		result = __ata_scsi_queuecmd(cmd, done, ap, dev);
 	else {
 		cmd->result = (DID_BAD_TARGET << 16);
 		done(cmd);
@@ -2636,7 +2660,7 @@ int ata_scsi_queuecmd(struct scsi_cmnd *cmd, void (*done)(struct scsi_cmnd *))
 
 	spin_unlock(&ap->host_set->lock);
 	spin_lock(shost->host_lock);
-	return 0;
+	return result ? SCSI_MLQUEUE_HOST_BUSY : 0;
 }
 
 /**

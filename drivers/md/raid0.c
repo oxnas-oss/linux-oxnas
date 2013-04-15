@@ -20,10 +20,79 @@
 
 #include <linux/module.h>
 #include <linux/raid/raid0.h>
+#include <asm/arch/sata.h>
 
 #define MAJOR_NR MD_MAJOR
 #define MD_DRIVER
 #define MD_PERSONALITY
+
+static void raid0_hw_raidable(mddev_t *mddev)
+{
+	raid0_conf_t *conf = mddev->private;
+
+    conf->hw_raid0_settings = 0;
+    return;
+
+/* A bug in the HW RAID section of the SATA core prevent HW accellerated RAID-0
+* from working on 28-bit drives. SW RAID-0 only :-(*/
+#if 0
+    /* is this a hw raid capable configuration */
+    if (mddev->raid_disks != 2) {
+        printk(KERN_DEBUG"raid0 not hw raidable, %d disks (needs to be 2)\n",mddev->raid_disks);
+        return;
+    }
+
+    /* one zone means all drives are same size */
+	if (conf->nr_strip_zones != 1) {
+        printk(KERN_DEBUG"raid0 not hw raidable, disks needs to be the same size\n");
+        return;
+	}
+
+	/* check stripe size between 16K and 2M */
+	if ((mddev->chunk_size < 16384) || (mddev->chunk_size > 2097152)) {
+        printk(KERN_DEBUG"raid0 not hw raidable, stripe size should be between 16K and 2M\n");
+        return;
+	}
+
+	/* Paranoid? */
+    if (!conf->strip_zone[0].dev[0]->bdev ||
+        !conf->strip_zone[0].dev[1]->bdev ||
+        !conf->strip_zone[0].dev[0]->bdev->bd_part ||
+        !conf->strip_zone[0].dev[1]->bdev->bd_part ) {
+        printk(KERN_DEBUG"raid0 not hw raidable, disks not ready\n");
+        return;
+	}
+
+	/* check partitions start on same sector number */
+    if (conf->strip_zone[0].dev[0]->bdev->bd_part->start_sect !=
+		conf->strip_zone[0].dev[1]->bdev->bd_part->start_sect) {
+        printk(KERN_DEBUG"raid0 not hw raidable, partition start sectors differ %lu, %lu\n",
+            conf->strip_zone[0].dev[0]->bdev->bd_part->start_sect,
+            conf->strip_zone[0].dev[1]->bdev->bd_part->start_sect);
+        return;
+    }
+
+    if ( oxnassata_get_port_no(conf->strip_zone[0].dev[0]->bdev->bd_disk->queue) != 0 ) {
+        printk(KERN_DEBUG"raid0 not hw raidable, RAID disk 0 not on internal SATA port 0\n");
+        return;
+    }
+
+    if ( oxnassata_get_port_no(conf->strip_zone[0].dev[1]->bdev->bd_disk->queue) != 1 ) {
+        printk(KERN_DEBUG"raid0 not hw raidable, RAID disk 1 not on internal SATA port 1\n");
+        return;
+    }
+
+	/* cannot mix 28 and 48-bit LBA devices */
+	if (!oxnassata_LBA_schemes_compatible()) {
+        printk(KERN_DEBUG"raid0 not hw raidable, disks need to use same LBA size (28 vs 48)\n");
+		return;
+	}
+
+	/* set stripe mode and size */
+	conf->hw_raid0_settings = OX800SATA_RAID0 | (mddev->chunk_size >> 12);
+    printk(KERN_DEBUG"raid0 using hw RAID: 0x%08x\n",conf->hw_raid0_settings);
+#endif /* no HW RAID-0 */
+}
 
 static void raid0_unplug(request_queue_t *q)
 {
@@ -237,7 +306,12 @@ static int create_strip_zones (mddev_t *mddev)
 
 	mddev->queue->issue_flush_fn = raid0_issue_flush;
 
+
+    /* is this a hw raid capable configuration */
+    raid0_hw_raidable(mddev);
+
 	printk("raid0: done.\n");
+
 	return 0;
  abort:
 	return 1;
@@ -279,24 +353,37 @@ static int raid0_run (mddev_t *mddev)
 		printk(KERN_ERR "md/raid0: non-zero chunk size required.\n");
 		return -EINVAL;
 	}
-	printk(KERN_INFO "%s: setting max_sectors to %d, segment boundary to %d\n",
-	       mdname(mddev),
-	       mddev->chunk_size >> 9,
-	       (mddev->chunk_size>>1)-1);
-	blk_queue_max_sectors(mddev->queue, mddev->chunk_size >> 9);
-	blk_queue_segment_boundary(mddev->queue, (mddev->chunk_size>>1) - 1);
 
 	conf = kmalloc(sizeof (raid0_conf_t), GFP_KERNEL);
 	if (!conf)
 		goto out;
 	mddev->private = (void *)conf;
  
-	conf->strip_zone = NULL;
-	conf->devlist = NULL;
-	if (create_strip_zones (mddev)) 
-		goto out_free_conf;
+    conf->strip_zone = NULL;
+    conf->devlist = NULL;
+    if (create_strip_zones (mddev))
+        goto out_free_conf;
 
-	/* calculate array device size */
+    if (conf->hw_raid0_settings) {
+        /* get the queue for the hw raid drive */
+        request_queue_t* rq = bdev_get_queue( conf->strip_zone[0].dev[0]->bdev );
+
+        printk(KERN_INFO "%s: setting max_sectors to %d, segment boundary to %lu\n",
+               mdname(mddev),
+               rq->max_sectors,
+               rq->seg_boundary_mask);
+        blk_queue_max_sectors(mddev->queue, rq->max_sectors );
+        blk_queue_segment_boundary(mddev->queue, rq->seg_boundary_mask );
+    } else {
+        printk(KERN_INFO "%s: setting max_sectors to %d, segment boundary to %d\n",
+               mdname(mddev),
+               mddev->chunk_size >> 9,
+               (mddev->chunk_size>>1)-1);
+        blk_queue_max_sectors(mddev->queue, mddev->chunk_size >> 9);
+        blk_queue_segment_boundary(mddev->queue, (mddev->chunk_size>>1) - 1);
+    }
+
+	/* total up array size */
 	mddev->array_size = 0;
 	ITERATE_RDEV(mddev,rdev,tmp)
 		mddev->array_size += rdev->size;
@@ -363,8 +450,12 @@ static int raid0_run (mddev_t *mddev)
 			mddev->queue->backing_dev_info.ra_pages = 2* stripe;
 	}
 
-
-	blk_queue_merge_bvec(mddev->queue, raid0_mergeable_bvec);
+    if (conf->hw_raid0_settings) {
+        request_queue_t* req = bdev_get_queue( conf->strip_zone[0].dev[0]->bdev );
+        blk_queue_merge_bvec(mddev->queue, req->merge_bvec_fn);
+    } else {
+        blk_queue_merge_bvec(mddev->queue, raid0_mergeable_bvec);
+    }
 	return 0;
 
 out_free_conf:
@@ -410,72 +501,82 @@ static int raid0_make_request (request_queue_t *q, struct bio *bio)
 	disk_stat_inc(mddev->gendisk, ios[rw]);
 	disk_stat_add(mddev->gendisk, sectors[rw], bio_sectors(bio));
 
-	chunk_size = mddev->chunk_size >> 10;
-	chunk_sects = mddev->chunk_size >> 9;
-	chunksize_bits = ffz(~chunk_size);
-	block = bio->bi_sector >> 1;
-	
+    if (conf->hw_raid0_settings) {
+        /* just change the drive and switch on raid */
+        bio->bi_bdev = conf->strip_zone[0].dev[0]->bdev;
+        bio->bi_raid = conf->hw_raid0_settings;
 
-	if (unlikely(chunk_sects < (bio->bi_sector & (chunk_sects - 1)) + (bio->bi_size >> 9))) {
-		struct bio_pair *bp;
-		/* Sanity check -- queue functions should prevent this happening */
-		if (bio->bi_vcnt != 1 ||
-		    bio->bi_idx != 0)
-			goto bad_map;
-		/* This is a one page bio that upper layers
-		 * refuse to split for us, so we need to split it.
-		 */
-		bp = bio_split(bio, bio_split_pool, chunk_sects - (bio->bi_sector & (chunk_sects - 1)) );
-		if (raid0_make_request(q, &bp->bio1))
-			generic_make_request(&bp->bio1);
-		if (raid0_make_request(q, &bp->bio2))
-			generic_make_request(&bp->bio2);
+        /* give the altered request back to the block layer */
+        return 1;
+    } else {
 
-		bio_pair_release(bp);
-		return 0;
-	}
- 
+        chunk_size = mddev->chunk_size >> 10;
+        chunk_sects = mddev->chunk_size >> 9;
+        chunksize_bits = ffz(~chunk_size);
+        block = bio->bi_sector >> 1;
 
-	{
-		sector_t x = block >> conf->preshift;
-		sector_div(x, (u32)conf->hash_spacing);
-		zone = conf->hash_table[x];
-	}
- 
-	while (block >= (zone->zone_offset + zone->size)) 
-		zone++;
     
-	sect_in_chunk = bio->bi_sector & ((chunk_size<<1) -1);
+        if (unlikely(chunk_sects < (bio->bi_sector & (chunk_sects - 1)) + (bio->bi_size >> 9))) {
+            struct bio_pair *bp;
+            /* Sanity check -- queue functions should prevent this happening */
+            if (bio->bi_vcnt != 1 ||
+                bio->bi_idx != 0)
+                goto bad_map;
+            /* This is a one page bio that upper layers
+             * refuse to split for us, so we need to split it.
+             */
+            bp = bio_split(bio, bio_split_pool, chunk_sects - (bio->bi_sector & (chunk_sects - 1)) );
+            if (raid0_make_request(q, &bp->bio1))
+                generic_make_request(&bp->bio1);
+            if (raid0_make_request(q, &bp->bio2))
+                generic_make_request(&bp->bio2);
+
+            bio_pair_release(bp);
+            return 0;
+        }
 
 
-	{
-		sector_t x =  (block - zone->zone_offset) >> chunksize_bits;
+        {
+            sector_t x = block >> conf->preshift;
+            sector_div(x, (u32)conf->hash_spacing);
+            zone = conf->hash_table[x];
+        }
 
-		sector_div(x, zone->nb_dev);
-		chunk = x;
-		BUG_ON(x != (sector_t)chunk);
+        while (block >= (zone->zone_offset + zone->size))
+            zone++;
 
-		x = block >> chunksize_bits;
-		tmp_dev = zone->dev[sector_div(x, zone->nb_dev)];
-	}
-	rsect = (((chunk << chunksize_bits) + zone->dev_offset)<<1)
-		+ sect_in_chunk;
- 
-	bio->bi_bdev = tmp_dev->bdev;
-	bio->bi_sector = rsect + tmp_dev->data_offset;
+        sect_in_chunk = bio->bi_sector & ((chunk_size<<1) -1);
 
-	/*
-	 * Let the main block layer submit the IO and resolve recursion:
-	 */
-	return 1;
+
+        {
+            sector_t x =  (block - zone->zone_offset) >> chunksize_bits;
+
+            sector_div(x, zone->nb_dev);
+            chunk = x;
+            BUG_ON(x != (sector_t)chunk);
+
+            x = block >> chunksize_bits;
+            tmp_dev = zone->dev[sector_div(x, zone->nb_dev)];
+        }
+        rsect = (((chunk << chunksize_bits) + zone->dev_offset)<<1)
+            + sect_in_chunk;
+
+        bio->bi_bdev = tmp_dev->bdev;
+        bio->bi_sector = rsect + tmp_dev->data_offset;
+
+        /*
+         * Let the main block layer submit the IO and resolve recursion:
+         */
+        return 1;
 
 bad_map:
-	printk("raid0_make_request bug: can't convert block across chunks"
-		" or bigger than %dk %llu %d\n", chunk_size, 
-		(unsigned long long)bio->bi_sector, bio->bi_size >> 10);
+        printk("raid0_make_request bug: can't convert block across chunks"
+            " or bigger than %dk %llu %d\n", chunk_size,
+            (unsigned long long)bio->bi_sector, bio->bi_size >> 10);
 
-	bio_io_error(bio, bio->bi_size);
-	return 0;
+        bio_io_error(bio, bio->bi_size);
+        return 0;
+    }
 }
 			   
 static void raid0_status (struct seq_file *seq, mddev_t *mddev)

@@ -203,6 +203,15 @@ static __init void reserve_node_zero(pg_data_t *pgdat)
 	reserve_bootmem_node(pgdat, __pa(swapper_pg_dir),
 			     PTRS_PER_PGD * sizeof(pgd_t));
 
+#ifdef CONFIG_OXNAS_MAP_SRAM
+	/*
+	 * Reserve the page table describing the first MB of address space in 4KB
+	 * pages so we can map SRAM over part of it. This didn't work for some reason
+	 * so instead reserve first 0x4000 as some other archs do
+	 */
+	 res_size = __pa(swapper_pg_dir) - PHYS_OFFSET;
+#endif // CONFIG_OXNAS_MAP_SRAM
+
 	/*
 	 * Hmm... This should go elsewhere, but we really really need to
 	 * stop things allocating the low memory; ideally we need a better
@@ -262,9 +271,19 @@ bootmem_init_node(int node, int initrd_node, struct meminfo *mi)
 		if (end_pfn < end)
 			end_pfn = end;
 
+#ifdef CONFIG_OXNAS_MAP_SRAM
+		/*
+		 * Assume only a single bank and stop the overwrite of the first section
+		 * descriptor
+		 */
+		map.pfn = __phys_to_pfn(mi->bank[i].start + 1024*1024);
+		map.virtual = __phys_to_virt(mi->bank[i].start + 1024*1024);
+		map.length = mi->bank[i].size - 1024*1024;
+#else // CONFIG_OXNAS_MAP_SRAM
 		map.pfn = __phys_to_pfn(mi->bank[i].start);
 		map.virtual = __phys_to_virt(mi->bank[i].start);
 		map.length = mi->bank[i].size;
+#endif // CONFIG_OXNAS_MAP_SRAM
 		map.type = MT_MEMORY;
 
 		create_mapping(&map);

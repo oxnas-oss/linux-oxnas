@@ -273,6 +273,27 @@ config I2C_NFORCE2
 	  This driver can also be built as a module.  If so, the module
 	  will be called i2c-nforce2.
 
+config I2C_OXNAS
+	tristate "Oxnas 0x800 on-chip I2C interface"
+	depends on  I2C
+	select I2C_ALGOOXSEMI
+	help
+	  Say Y here if you want to use IIC peripheral found on
+	  embedded 0X800 based systems.
+
+	  This driver can also be built as a module.  If so, the module
+	  will be called i2c-oxnas.
+
+config I2C_OXNAS_BITBASH
+	tristate "Oxnas 0x800 bitbashed I2C interface"
+	depends on  I2C
+	help
+	  Say Y here if you want to use IIC GPIO Bitbash found on
+	  embedded 0X800 based systems.
+
+	  This driver can also be built as a module.  If so, the module
+	  will be called i2c-oxnas-bitbash.
+
 config I2C_PARPORT
 	tristate "Parallel port adapter"
 	depends on I2C && PARPORT

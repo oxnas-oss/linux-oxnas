@@ -77,7 +77,7 @@ __setup("hlt", hlt_setup);
 void (*pm_idle)(void);
 EXPORT_SYMBOL(pm_idle);
 
-void (*pm_power_off)(void);
+void (*pm_power_off)(void) = arch_poweroff;
 EXPORT_SYMBOL(pm_power_off);
 
 /*
@@ -147,8 +147,8 @@ void machine_halt(void)
 
 void machine_power_off(void)
 {
-	if (pm_power_off)
-		pm_power_off();
+    if (pm_power_off)
+        pm_power_off();
 }
 
 

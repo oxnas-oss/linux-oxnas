@@ -781,34 +781,57 @@ found:
 
 /*
  * Grab and keep cached pages assosiated with a file in the svc_rqst
- * so that they can be passed to the netowork sendmsg/sendpage routines
- * directrly. They will be released after the sending has completed.
+ * so that they can be passed to the network sendmsg/sendpage routines
+ * directly. They will be released after the sending has completed.
  */
 static int
-nfsd_read_actor(read_descriptor_t *desc, struct page *page, unsigned long offset , unsigned long size)
+nfsd_read_actor(read_descriptor_t *desc, struct page **page, unsigned long offset , unsigned long size)
 {
 	unsigned long count = desc->count;
 	struct svc_rqst *rqstp = desc->arg.data;
+    unsigned long ret_size;
 
 	if (size > count)
 		size = count;
 
+    ret_size = size;
+    // If this is the first transfer, set the offset
 	if (rqstp->rq_res.page_len == 0) {
-		get_page(page);
-		rqstp->rq_respages[rqstp->rq_resused++] = page;
 		rqstp->rq_res.page_base = offset;
-		rqstp->rq_res.page_len = size;
-	} else if (page != rqstp->rq_respages[rqstp->rq_resused-1]) {
-		get_page(page);
-		rqstp->rq_respages[rqstp->rq_resused++] = page;
-		rqstp->rq_res.page_len += size;
-	} else {
-		rqstp->rq_res.page_len += size;
-	}
+    }
+    rqstp->rq_res.page_len += size;
 
-	desc->count = count - size;
-	desc->written += size;
-	return size;
+
+    // Go through all pages
+    while (size) {
+        unsigned long psize = PAGE_CACHE_SIZE - offset;
+        struct page *page_it;
+
+        psize = PAGE_CACHE_SIZE - offset;
+        if (size <= psize) {
+            psize = size;
+        }
+
+        page_it = *page;
+        // As long as we're on a new page, let's acquire it,
+        // and increment the used page count.
+        if (page_it != rqstp->rq_respages[rqstp->rq_resused-1]) {
+            rqstp->rq_respages[rqstp->rq_resused++] = page_it;
+            get_page(page_it);
+        }
+
+        size -= psize;
+        page++;
+        offset += psize;
+        offset &= (PAGE_CACHE_SIZE - 1);
+
+    } // while size
+
+
+    // Update the desc. stats
+    desc->count = count - ret_size;
+	desc->written += ret_size;
+	return ret_size;
 }
 
 static int

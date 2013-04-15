@@ -203,7 +203,7 @@ static void qtd_copy_status (
 					   ehci_to_hcd(ehci)->self.root_hub)) {
 #ifdef DEBUG
 			struct usb_device *tt = urb->dev->tt->hub;
-			dev_dbg (&tt->dev,
+			ehci_dbg (&tt->dev,
 				"clear tt buffer port %d, a%d ep%d t%08x\n",
 				urb->dev->ttport, urb->dev->devnum,
 				usb_pipeendpoint (urb->pipe), token);
@@ -392,6 +392,13 @@ halt:
 		/* remove it from the queue */
 		spin_lock (&urb->lock);
 		qtd_copy_status (ehci, urb, qtd->length, token);
+#if  0
+                if (urb->status == -ECONNRESET || urb->status == -ENOENT)
+                {
+                        /* may be an aborting urb so reset the local hub */
+                        usb_hub_tt_clear_buffer (urb->dev, urb->pipe);
+                }
+#endif
 		do_status = (urb->status == -EREMOTEIO)
 				&& usb_pipecontrol (urb->pipe);
 		spin_unlock (&urb->lock);
@@ -1027,6 +1034,7 @@ static void start_unlink_async (struct ehci_hcd *ehci, struct ehci_qh *qh)
 			/* ... and CMD_IAAD clear */
 			writel (cmd & ~CMD_ASE, &ehci->regs->command);
 			wmb ();
+
 			// handshake later, if we need to
 			timer_action_done (ehci, TIMER_ASYNC_OFF);
 		}

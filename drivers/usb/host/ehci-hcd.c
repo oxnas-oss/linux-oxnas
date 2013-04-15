@@ -90,14 +90,13 @@
  * 2001-June	Works with usb-storage and NEC EHCI on 2.4
  */
 
-#define DRIVER_VERSION "10 Dec 2004"
-#define DRIVER_AUTHOR "David Brownell"
-#define DRIVER_DESC "USB 2.0 'Enhanced' Host Controller (EHCI) Driver"
+#define DRIVER_VERSION "12 May 2005"
+#define DRIVER_AUTHOR "John Larkworthy"
+#define DRIVER_DESC "USB 2.0 'Enhanced' Host Controller (EHCI) Driver for OXNAS"
 
 static const char	hcd_name [] = "ehci_hcd";
 
 
-#undef EHCI_VERBOSE_DEBUG
 #undef EHCI_URB_TRACE
 
 #ifdef DEBUG
@@ -167,6 +166,8 @@ static int handshake (void __iomem *ptr, u32 mask, u32 done, int usec)
 		udelay (1);
 		usec--;
 	} while (usec > 0);
+	printk (KERN_ERR " handshake timeout read (@%p = %x) & %x != %x) \n", ptr, result, mask, done);
+
 	return -ETIMEDOUT;
 }
 
@@ -187,23 +188,31 @@ static int ehci_halt (struct ehci_hcd *ehci)
 	return handshake (&ehci->regs->status, STS_HALT, STS_HALT, 16 * 125);
 }
 
-/* put TDI/ARC silicon into EHCI mode */
-static void tdi_reset (struct ehci_hcd *ehci)
+static void tdi_reset(struct ehci_hcd *ehci)
 {
-	u32 __iomem	*reg_ptr;
-	u32		tmp;
+	u32 __iomem *reg_ptr;
+	u32         tmp;
 
-	reg_ptr = (u32 __iomem *)(((u8 __iomem *)ehci->regs) + 0x68);
+	reg_ptr = (u32 __iomem *) (ehci->regs) + ((0x64-0x40)/4);
 	tmp = readl (reg_ptr);
-	tmp |= 0x3;
+	tmp &= ~0x00ff0000;
+	tmp |= 0x00200000; /* set burst pre load count to 16 */
+	tmp |= 0x16; /* set sheduler overhead to 3 * 1.267us */
 	writel (tmp, reg_ptr);
+
+	reg_ptr = (u32 __iomem *) (ehci->regs) + ((0x68-0x40)/4);
+	tmp = readl (reg_ptr);
+	tmp |= 0x2; /* set sheduler overhead to 2 * 6.333us */
+	writel (tmp, reg_ptr);
+
 }
 
 /* reset a non-running (STS_HALT == 1) controller */
 static int ehci_reset (struct ehci_hcd *ehci)
 {
-	int	retval;
+	int retval;
 	u32	command = readl (&ehci->regs->command);
+
 
 	command |= CMD_RESET;
 	dbg_cmd (ehci, "reset", command);
@@ -214,9 +223,17 @@ static int ehci_reset (struct ehci_hcd *ehci)
 
 	if (retval)
 		return retval;
+	if (ehci->is_tdi_rh_tt)
+		tdi_reset(ehci); /* set TDI EHCI internal registers */
+#ifdef CONFIG_ARCH_OXNAS
+	command=readl(&ehci->regs->port_status[1]);
+	command |=0xc0000000; /* force use of serial PHY on 1st full speed port */
+	writel(command,&ehci->regs->port_status[1]);
 
-	if (ehci_is_TDI(ehci))
-		tdi_reset (ehci);
+	command=readl(&ehci->regs->port_status[2]);
+	command |=0xc0000000; /* force use of serial PHY on 2nd full speed port */
+	writel(command,&ehci->regs->port_status[2]);
+#endif
 
 	return retval;
 }
@@ -368,7 +385,6 @@ static void ehci_stop (struct usb_hcd *hcd)
 
 	/* Turn off port power on all root hub ports. */
 	ehci_port_power (ehci, 0);
-
 	/* no more interrupts ... */
 	del_timer_sync (&ehci->watchdog);
 
@@ -383,6 +399,8 @@ static void ehci_stop (struct usb_hcd *hcd)
 	/* let companion controllers work when we aren't */
 	writel (0, &ehci->regs->configured_flag);
 	unregister_reboot_notifier (&ehci->reboot_notifier);
+	if (ehci->is_tdi_rh_tt)
+		ehci_reset(ehci);
 
 	remove_debug_files (ehci);
 
@@ -899,6 +917,10 @@ MODULE_LICENSE ("GPL");
 
 #ifdef CONFIG_SOC_AU1X00
 #include "ehci-au1xxx.c"
+#define	EHCI_BUS_GLUED
+#endif
+
+#ifdef CONFIG_ARCH_OXNAS
 #define	EHCI_BUS_GLUED
 #endif
 

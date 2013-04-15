@@ -359,10 +359,50 @@ extern unsigned long __arch_clear_user(void __user *addr, unsigned long n);
 extern unsigned long __arch_strncpy_from_user(char *to, const char __user *from, unsigned long count);
 extern unsigned long __arch_strnlen_user(const char __user *s, long n);
 
+#ifdef CONFIG_OXNAS_INSTRUMENT_COPIES
+#include <asm/arch/hardware.h>
+#ifdef CONFIG_OXNAS_INSTRUMENT_COPIES_GPIO
+#include <asm/io.h>
+#define INSTRUMENT_COPIES_GPIO_TO_MASK (1UL << 6)
+#define INSTRUMENT_COPIES_GPIO_FROM_MASK (1UL << 7)
+#endif // CONFIG_OXNAS_INSTRUMENT_COPIES_GPIO
+#endif // CONFIG_OXNAS_INSTRUMENT_COPIES
+
 static inline unsigned long copy_from_user(void *to, const void __user *from, unsigned long n)
 {
 	if (access_ok(VERIFY_READ, from, n))
-		n = __arch_copy_from_user(to, from, n);
+#ifdef CONFIG_OXNAS_INSTRUMENT_COPIES
+    {
+        if (n > CONFIG_OXNAS_INSTRUMENT_COPIES_THRESHOLD) {
+            unsigned long result;
+
+#ifdef CONFIG_OXNAS_INSTRUMENT_COPIES_TIME
+            unsigned long start, end;
+            start = *((volatile unsigned long*)TIMER2_VALUE);
+#endif // CONFIG_OXNAS_INSTRUMENT_COPIES_TIME
+
+#ifdef CONFIG_OXNAS_INSTRUMENT_COPIES_GPIO
+            writel(INSTRUMENT_COPIES_GPIO_FROM_MASK, GPIO_A_OUTPUT_SET);
+#endif // CONFIG_OXNAS_INSTRUMENT_COPIES_GPIO
+
+            result = __arch_copy_from_user(to, from, n);
+
+#ifdef CONFIG_OXNAS_INSTRUMENT_COPIES_GPIO
+            writel(INSTRUMENT_COPIES_GPIO_FROM_MASK, GPIO_A_OUTPUT_CLEAR);
+#endif // CONFIG_OXNAS_INSTRUMENT_COPIES_GPIO
+
+#ifdef CONFIG_OXNAS_INSTRUMENT_COPIES_TIME
+            end = *((volatile unsigned long*)TIMER2_VALUE);
+            printk("F T=0x%08lx F=0x%08lx L=%lu S=0x%08lx E=0x%08lx\n", (unsigned long)to, (unsigned long)from, n, start, end);
+#endif // CONFIG_OXNAS_INSTRUMENT_COPIES_TIME
+            n = result;
+        } else {
+            n = __arch_copy_from_user(to, from, n);
+        }
+    }
+#else
+        n = __arch_copy_from_user(to, from, n);
+#endif // CONFIG_OXNAS_INSTRUMENT_COPIES
 	else /* security hole - plug it */
 		memzero(to, n);
 	return n;
@@ -370,19 +410,107 @@ static inline unsigned long copy_from_user(void *to, const void __user *from, un
 
 static inline unsigned long __copy_from_user(void *to, const void __user *from, unsigned long n)
 {
-	return __arch_copy_from_user(to, from, n);
+#ifdef CONFIG_OXNAS_INSTRUMENT_COPIES
+        if (n > CONFIG_OXNAS_INSTRUMENT_COPIES_THRESHOLD) {
+            unsigned long result;
+
+#ifdef CONFIG_OXNAS_INSTRUMENT_COPIES_TIME
+            unsigned long start, end;
+            start = *((volatile unsigned long*)TIMER2_VALUE);
+#endif // CONFIG_OXNAS_INSTRUMENT_COPIES_TIME
+
+#ifdef CONFIG_OXNAS_INSTRUMENT_COPIES_GPIO
+            writel(INSTRUMENT_COPIES_GPIO_FROM_MASK, GPIO_A_OUTPUT_SET);
+#endif // CONFIG_OXNAS_INSTRUMENT_COPIES_GPIO
+
+            result = __arch_copy_from_user(to, from, n);
+
+#ifdef CONFIG_OXNAS_INSTRUMENT_COPIES_GPIO
+            writel(INSTRUMENT_COPIES_GPIO_FROM_MASK, GPIO_A_OUTPUT_CLEAR);
+#endif // CONFIG_OXNAS_INSTRUMENT_COPIES_GPIO
+
+#ifdef CONFIG_OXNAS_INSTRUMENT_COPIES_TIME
+            end = *((volatile unsigned long*)TIMER2_VALUE);
+            printk("__F T=0x%08lx F=0x%08lx L=%lu S=0x%08lx E=0x%08lx\n", (unsigned long)to, (unsigned long)from, n, start, end);
+#endif // CONFIG_OXNAS_INSTRUMENT_COPIES_TIME
+            return result;
+        } else {
+            return __arch_copy_from_user(to, from, n);
+        }
+#else
+    return __arch_copy_from_user(to, from, n);
+#endif // CONFIG_OXNAS_INSTRUMENT_COPIES
 }
 
 static inline unsigned long copy_to_user(void __user *to, const void *from, unsigned long n)
 {
-	if (access_ok(VERIFY_WRITE, to, n))
-		n = __arch_copy_to_user(to, from, n);
-	return n;
+    if (access_ok(VERIFY_WRITE, to, n)) {
+#ifdef CONFIG_OXNAS_INSTRUMENT_COPIES
+        if (n > CONFIG_OXNAS_INSTRUMENT_COPIES_THRESHOLD) {
+            unsigned long result;
+
+#ifdef CONFIG_OXNAS_INSTRUMENT_COPIES_TIME
+            unsigned long start, end;
+            start = *((volatile unsigned long*)TIMER2_VALUE);
+#endif // CONFIG_OXNAS_INSTRUMENT_COPIES_TIME
+
+#ifdef CONFIG_OXNAS_INSTRUMENT_COPIES_GPIO
+            writel(INSTRUMENT_COPIES_GPIO_TO_MASK, GPIO_A_OUTPUT_SET);
+#endif // CONFIG_OXNAS_INSTRUMENT_COPIES_GPIO
+
+            result = __arch_copy_to_user(to, from, n);
+
+#ifdef CONFIG_OXNAS_INSTRUMENT_COPIES_GPIO
+            writel(INSTRUMENT_COPIES_GPIO_TO_MASK, GPIO_A_OUTPUT_CLEAR);
+#endif // CONFIG_OXNAS_INSTRUMENT_COPIES_GPIO
+
+#ifdef CONFIG_OXNAS_INSTRUMENT_COPIES_TIME
+            end = *((volatile unsigned long*)TIMER2_VALUE);
+            printk("T T=0x%08lx F=0x%08lx L=%lu S=0x%08lx E=0x%08lx\n", (unsigned long)to, (unsigned long)from, n, start, end);
+#endif // CONFIG_OXNAS_INSTRUMENT_COPIES_TIME
+            n = result;
+        } else {
+            n = __arch_copy_to_user(to, from, n);
+        }
+#else
+        n = __arch_copy_to_user(to, from, n);
+#endif // CONFIG_OXNAS_INSTRUMENT_COPIES
+    }
+    return n;
 }
 
 static inline unsigned long __copy_to_user(void __user *to, const void *from, unsigned long n)
 {
-	return __arch_copy_to_user(to, from, n);
+#ifdef CONFIG_OXNAS_INSTRUMENT_COPIES
+        if (n > CONFIG_OXNAS_INSTRUMENT_COPIES_THRESHOLD) {
+            unsigned long result;
+
+#ifdef CONFIG_OXNAS_INSTRUMENT_COPIES_TIME
+            unsigned long start, end;
+            start = *((volatile unsigned long*)TIMER2_VALUE);
+#endif // CONFIG_OXNAS_INSTRUMENT_COPIES_TIME
+
+#ifdef CONFIG_OXNAS_INSTRUMENT_COPIES_GPIO
+            writel(INSTRUMENT_COPIES_GPIO_TO_MASK, GPIO_A_OUTPUT_SET);
+#endif // CONFIG_OXNAS_INSTRUMENT_COPIES_GPIO
+
+            result = __arch_copy_to_user(to, from, n);
+
+#ifdef CONFIG_OXNAS_INSTRUMENT_COPIES_GPIO
+            writel(INSTRUMENT_COPIES_GPIO_TO_MASK, GPIO_A_OUTPUT_CLEAR);
+#endif // CONFIG_OXNAS_INSTRUMENT_COPIES_GPIO
+
+#ifdef CONFIG_OXNAS_INSTRUMENT_COPIES_TIME
+            end = *((volatile unsigned long*)TIMER2_VALUE);
+            printk("__T T=0x%08lx F=0x%08lx L=%lu S=0x%08lx E=0x%08lx\n", (unsigned long)to, (unsigned long)from, n, start, end);
+#endif // CONFIG_OXNAS_INSTRUMENT_COPIES_TIME
+            return result;
+        } else {
+            return __arch_copy_to_user(to, from, n);
+        }
+#else
+    return __arch_copy_to_user(to, from, n);
+#endif // CONFIG_OXNAS_INSTRUMENT_COPIES
 }
 
 #define __copy_to_user_inatomic __copy_to_user

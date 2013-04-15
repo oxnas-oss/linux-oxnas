@@ -651,6 +651,7 @@ extern int usb_disabled(void);
 					 * ignored */
 #define URB_NO_TRANSFER_DMA_MAP	0x0004	/* urb->transfer_dma valid on submit */
 #define URB_NO_SETUP_DMA_MAP	0x0008	/* urb->setup_dma valid on submit */
+#define URB_ASYNC_UNLINK	0x0010  /* usb_unlink_urb() returns ASAP */
 #define URB_NO_FSBR		0x0020	/* UHCI-specific */
 #define URB_ZERO_PACKET		0x0040	/* Finish bulk OUT with short packet */
 #define URB_NO_INTERRUPT	0x0080	/* HINT: no non-error interrupt

@@ -632,6 +632,11 @@ ehci_port_speed(struct ehci_hcd *ehci, unsigned int portsc)
 	}
 	return (1<<USB_PORT_FEAT_HIGHSPEED);
 }
+#ifdef CONFIG_USB_EHCI_ROOT_HUB_TT
+/* TDI transaction translator status register and busy bit */
+#define TT_BUSY 0x1
+#define TT_STATUS  (0x15c-0x140)
+#endif
 
 #else
 

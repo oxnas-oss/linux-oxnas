@@ -21,8 +21,8 @@
 #define UART_TX		0	/* Out: Transmit buffer */
 
 #define UART_IER	1	/* Out: Interrupt Enable Register */
-#define UART_IER_MSI		0x08 /* Enable Modem status interrupt */
-#define UART_IER_RLSI		0x04 /* Enable receiver line status interrupt */
+#define UART_IER_MSI	0x80//	0x08 /* Enable Modem status interrupt */
+#define UART_IER_RLSI	0x40//	0x04 /* Enable receiver line status interrupt */
 #define UART_IER_THRI		0x02 /* Enable Transmitter holding register int. */
 #define UART_IER_RDI		0x01 /* Enable receiver data interrupt */
 /*
@@ -128,7 +128,16 @@
 #define UART_MSR_DCTS		0x01 /* Delta CTS */
 #define UART_MSR_ANY_DELTA	0x0F /* Any of the delta bits! */
 
-#define UART_SCR	7	/* I/O: Scratch Register */
+#define UART_SCR    7	/* I/O: Scratch Register */
+
+/* Oxsemi NAS UART extra registers */
+#define UART_DLF            0x09  /* Oxsemi 16550 fractional divider */
+#define UART_RX_FILL        0x0a
+#define UART_TX_SPACE       0x0b
+#define UART_WIDE_ACCESS    0x0c
+#define UART_XON_CHAR       0x10
+#define UART_XOFF_CHAR      0x11
+#define UART_DMA            0x12
 
 /*
  * DLAB=1
